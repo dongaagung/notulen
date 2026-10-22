@@ -6,3 +6,4 @@ xcuserdata/
 *.xcodeproj
 .DS_Store
 .superpowers/
+Models/
