@@ -10,31 +10,41 @@ final class PowerGuard {
     var onWillSleep: (@MainActor () -> Void)?
     var onDidWake: (@MainActor () -> Void)?
 
+    /// True while it keeps the Mac awake.
+    private(set) var preventsSleep = false
+
     private let notificationCenter: NotificationCenter
+    private let takesSystemAssertion: Bool
     private var assertion: IOPMAssertionID?
     private var observers: [any NSObjectProtocol] = []
 
     /// `notificationCenter` posts sleep and wake: the workspace's, or a
-    /// test's own.
-    init(notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter) {
+    /// test's own. Without `takesSystemAssertion` (tests), `preventsSleep`
+    /// follows `begin()`, sleep and `end()` but the system is never asked.
+    init(
+        notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        takesSystemAssertion: Bool = true
+    ) {
         self.notificationCenter = notificationCenter
+        self.takesSystemAssertion = takesSystemAssertion
     }
-
-    /// True while it keeps the Mac awake.
-    var preventsSleep: Bool { assertion != nil }
 
     /// Keeps the Mac awake and listens for sleep and wake. After a sleep it
     /// keeps listening, but only keeps the Mac awake once called again.
     func begin() {
         if observers.isEmpty { observeSleepAndWake() }
-        guard assertion == nil else { return }
-        var id = IOPMAssertionID(0)
-        let result = IOPMAssertionCreateWithName(
-            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-            IOPMAssertionLevel(kIOPMAssertionLevelOn),
-            "Notulen sedang merekam" as CFString,
-            &id)
-        if result == kIOReturnSuccess { assertion = id }
+        guard !preventsSleep else { return }
+        if takesSystemAssertion {
+            var id = IOPMAssertionID(0)
+            let result = IOPMAssertionCreateWithName(
+                kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Notulen sedang merekam" as CFString,
+                &id)
+            guard result == kIOReturnSuccess else { return }
+            assertion = id
+        }
+        preventsSleep = true
     }
 
     /// Lets the Mac sleep again and stops listening.
@@ -45,9 +55,9 @@ final class PowerGuard {
     }
 
     private func releaseAssertion() {
-        guard let assertion else { return }
-        IOPMAssertionRelease(assertion)
-        self.assertion = nil
+        if let assertion { IOPMAssertionRelease(assertion) }
+        assertion = nil
+        preventsSleep = false
     }
 
     private func observeSleepAndWake() {

@@ -19,6 +19,13 @@ struct MeetingEndDetector {
 
     /// The meeting audio was above the silence threshold at `time`.
     mutating func heardSound(at time: TimeInterval) {
+        restartQuietClock(at: time)
+    }
+
+    /// A new quiet stretch starts at `time`, as when the meeting audio
+    /// starts again after a wake. Whether the app's quit was offered carries
+    /// over.
+    mutating func restartQuietClock(at time: TimeInterval) {
         quietSince = max(quietSince, time)
         offeredQuiet = false
     }
@@ -39,9 +46,12 @@ struct MeetingEndDetector {
     }
 
     /// The owner chose to keep recording: the next offer comes after another
-    /// `silenceLimit` of quiet from `now`.
-    mutating func declined(at now: TimeInterval) {
+    /// `silenceLimit` of quiet from `now`. An app that is gone now, even one
+    /// that quit while a quiet offer was showing, counts as offered: it's
+    /// offered again only after it runs and quits again.
+    mutating func declined(at now: TimeInterval, appRunning: Bool = true) {
         quietSince = max(quietSince, now)
         offeredQuiet = false
+        if !appRunning { offeredQuit = true }
     }
 }

@@ -8,6 +8,8 @@ final class MeetingSessionTests {
         .appending(path: "NotulenTests-\(UUID().uuidString)")
     let meetingCapture = FakeCapture.meeting()
     let micCapture = FakeCapture.mic()
+    /// No real power assertion, and deaf to the system's sleep.
+    let power = PowerGuard.fake()
     let config = MeetingSession.Configuration(
         title: "Weekly sync", audioSource: .systemWide, locale: Locale(identifier: "id-ID"), vocabulary: [])
     private(set) lazy var store = makeStore()
@@ -28,7 +30,7 @@ final class MeetingSessionTests {
         let clock = Date(timeIntervalSince1970: 1_800_000_000)
         return MeetingSession(
             store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { clock },
-            audioBuffer: audioBuffer)
+            audioBuffer: audioBuffer, power: power)
     }
 
     private func journal(_ meeting: Meeting) throws -> [TranscriptLine] {
@@ -70,7 +72,9 @@ final class MeetingSessionTests {
         #expect(await waitUntil { session.phase == .recording })
         #expect(store.meetings.first?.status == .recording)
         #expect(store.meetings.first?.endedAt == nil)
+        #expect(power.preventsSleep)
         _ = await session.stop()
+        #expect(!power.preventsSleep)
         #expect(store.meetings.first?.endedAt != nil)
         #expect(store.meetings.first?.status == .ready)
         #expect(makeStore().meetings.first?.status == .ready)
@@ -149,6 +153,7 @@ final class MeetingSessionTests {
         #expect(store.meetings.first?.status == .failed)
         #expect(store.meetings.first?.failure != nil)
         #expect(session.notices.count == 2)
+        #expect(!power.preventsSleep)
     }
 
     @Test func cancellingTheStartRemovesTheMeeting() async throws {
@@ -160,6 +165,7 @@ final class MeetingSessionTests {
         #expect(store.meetings.isEmpty && makeStore().meetings.isEmpty)
         try await Task.sleep(for: .milliseconds(100))
         #expect(session.phase == .idle && !meetingCapture.isCapturing)
+        #expect(!power.preventsSleep)
     }
 
     @Test func noticeCopy() {

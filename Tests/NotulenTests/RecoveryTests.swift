@@ -8,6 +8,8 @@ final class RecoveryTests {
         .appending(path: "NotulenTests-\(UUID().uuidString)")
     let meetingCapture = FakeCapture.meeting()
     let micCapture = FakeCapture.mic()
+    /// No real power assertion, and deaf to the system's sleep.
+    let power = PowerGuard.fake()
     let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
     private(set) lazy var store = makeStore()
 
@@ -26,7 +28,7 @@ final class RecoveryTests {
         let now = startedAt.addingTimeInterval(300)
         return MeetingSession(
             store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { now },
-            audioBuffer: audioBuffer)
+            audioBuffer: audioBuffer, power: power)
     }
 
     private func meeting(_ status: MeetingStatus, startedAt: Date? = nil) -> Meeting {
@@ -112,6 +114,7 @@ final class RecoveryTests {
             FakeSpeech(meeting: [.final("Lanjut", 1, 2)], mic: [.final("Oke", 3, 4)]), audioBuffer: { buffer })
         try session.resume(meeting)
         #expect(await waitUntil { meetingCapture.isCapturing && micCapture.isCapturing })
+        #expect(power.preventsSleep)
         // The speaker audio starts at the resume. Only `append` writes
         // to the buffer meanwhile, and it leaves the segments alone.
         #expect(buffer.meetingTime(ofBufferTime: 0) == 300)
@@ -123,6 +126,7 @@ final class RecoveryTests {
 
         #expect(stopped.startedAt == startedAt)
         #expect(stopped.status == .ready)
+        #expect(!power.preventsSleep)
         let lines = try journal(meeting)
         #expect(lines.map(\.text) == ["Baris 0", "Baris 65", "Lanjut", "Oke"])
         #expect(lines.suffix(2).map(\.start) == [301, 303])
@@ -156,6 +160,7 @@ final class RecoveryTests {
         try session.resume(meeting)
         #expect(await waitUntil { session.phase == .idle })
         #expect(!meetingCapture.isCapturing && !micCapture.isCapturing)
+        #expect(!power.preventsSleep)
         let saved = try #require(makeStore().meetings.first)
         #expect(saved.status == .interrupted && saved.endedAt == nil && saved.failure == nil)
         #expect(saved.gaps.isEmpty)
@@ -215,6 +220,7 @@ final class RecoveryTests {
         await session.interrupt()
 
         #expect(session.phase == .idle)
+        #expect(!power.preventsSleep)
         #expect(!meetingCapture.isCapturing && !micCapture.isCapturing)
         let saved = try #require(makeStore().meetings.first)
         #expect(saved.status == .interrupted && saved.endedAt == nil)

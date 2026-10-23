@@ -85,10 +85,19 @@ final class MeetingSession {
     private var monitorTask: Task<Void, Never>?
     private var capturesMeeting = false
     private var heardMeeting = false
-    /// Counts quiet meeting audio for the offer to finish; nil without it.
+    /// Tells when the meeting looks over, for the offer to finish. Made
+    /// when the meeting audio first starts, and kept for the whole meeting so
+    /// a declined offer stays declined across a wake.
     private var endDetector: MeetingEndDetector?
+    /// The one app the meeting records was seen running. Only then does its
+    /// absence mean it quit: a helper process's own bundle ID may never
+    /// show up as a running app.
+    private var appSeenRunning = false
     /// Meeting time the Mac went to sleep at, until recording goes on.
     private var sleptAt: TimeInterval?
+    /// Between the Mac going to sleep and its next wake. It can sleep again
+    /// before the last wake was handled.
+    private var asleep = false
     /// The last lines coming in after capture stopped for sleep.
     private var sleepDrain: Task<Void, Never>?
 
@@ -369,14 +378,18 @@ final class MeetingSession {
     private func startCapture(_ devices: CaptureDevices, micAllowed: Bool, speech: any SttProvider) {
         reportFailures(of: devices)
         capturesMeeting = false
-        endDetector = nil
         do {
             let stream = try devices.meeting.start()
             let offset = meetingTime
             offsets[.meeting] = offset
             capturesMeeting = true
-            // Quiet counts from when the meeting audio started, as after a wake.
-            endDetector = MeetingEndDetector(startedAt: offset)
+            // Quiet counts from when the meeting audio started, also after a
+            // wake; what was offered or declined carries over.
+            if endDetector == nil {
+                endDetector = MeetingEndDetector(startedAt: offset)
+            } else {
+                endDetector?.restartQuietClock(at: offset)
+            }
             meetingAudio.beginSegment(atMeetingTime: offset)
             listen(to: tee(stream, into: meetingAudio), channel: .meeting, with: speech)
         } catch {
@@ -517,7 +530,12 @@ final class MeetingSession {
     /// recording with its journal open; waking decides what comes next.
     /// `PowerGuard` calls it; internal for tests.
     func handleWillSleep() {
-        guard phase == .recording, sleptAt == nil else { return }
+        guard phase == .recording else { return }
+        asleep = true
+        // Capture is stopped already: the Mac sleeps again before its last
+        // wake was handled, or while the owner is asked. The gap keeps the
+        // first sleep's start.
+        guard sleptAt == nil else { return }
         sleptAt = meetingTime
         haltCapture()
         sleepDrain = Task { await drainCapture() }
@@ -527,12 +545,14 @@ final class MeetingSession {
     /// gap. After a long one nothing records until the owner answers
     /// `wakeQuestion`. `PowerGuard` calls it; internal for tests.
     func handleDidWake() async {
+        asleep = false
         guard phase == .recording, let sleptAt, wakeQuestion == nil else { return }
         await sleepDrain?.value
         sleepDrain = nil
-        // Meanwhile another wake report may have handled it, or Selesai or
+        // Meanwhile the Mac may have gone back to sleep (its next wake
+        // decides), another wake report may have handled it, or Selesai or
         // quitting ended the meeting.
-        guard phase == .recording, self.sleptAt == sleptAt, wakeQuestion == nil else { return }
+        guard phase == .recording, !asleep, self.sleptAt == sleptAt, wakeQuestion == nil else { return }
         let slept = meetingTime - sleptAt
         switch WakePolicy.decision(sleptFor: slept) {
         case .resume:
@@ -552,11 +572,13 @@ final class MeetingSession {
     func answerWake(continueRecording: Bool) async {
         guard phase == .recording, wakeQuestion != nil else { return }
         wakeQuestion = nil
-        if continueRecording {
-            recordAfterSleep()
-        } else {
+        if !continueRecording {
             _ = await stop()
+        } else if !asleep {
+            recordAfterSleep()
         }
+        // Lanjutkan as the Mac goes back to sleep: its wake decides again,
+        // from the first sleep's start.
     }
 
     /// Saves the sleep as a gap that ends now and starts capture again the
@@ -574,10 +596,12 @@ final class MeetingSession {
 
     private func resetSleepAndOffers() {
         sleptAt = nil
+        asleep = false
         sleepDrain = nil
         wakeQuestion = nil
         offersFinish = false
         endDetector = nil
+        appSeenRunning = false
     }
 
     // MARK: Background work
@@ -608,19 +632,26 @@ final class MeetingSession {
     func declineFinishOffer() {
         guard offersFinish else { return }
         offersFinish = false
-        endDetector?.declined(at: meetingTime)
+        // Covers an app that quit while the offer was showing.
+        endDetector?.declined(at: meetingTime, appRunning: meetingAppRunning())
     }
 
     /// Offers, never stops: the meeting audio has been quiet for 10 minutes,
-    /// or the one app it records quit.
+    /// or the one app it records quit. Not without meeting audio, as when
+    /// its capture couldn't start: a mic-only recording isn't "over".
     private func offerFinishIfOver() {
-        guard !offersFinish, var detector = endDetector, let meeting else { return }
-        let running = switch meeting.audioSource {
-        case .systemWide: true
-        case .app(let bundleID, _): appRunning(bundleID)
-        }
-        offersFinish = detector.shouldOffer(at: meetingTime, appRunning: running)
+        guard !offersFinish, capturesMeeting, var detector = endDetector else { return }
+        offersFinish = detector.shouldOffer(at: meetingTime, appRunning: meetingAppRunning())
         endDetector = detector
+    }
+
+    /// False once the one app the meeting records quit, after it was seen
+    /// running. System-wide audio has no app to quit.
+    private func meetingAppRunning() -> Bool {
+        guard case .app(let bundleID, _)? = meeting?.audioSource else { return true }
+        let running = appRunning(bundleID)
+        if running { appSeenRunning = true }
+        return running || !appSeenRunning
     }
 
     /// Counts from when the meeting channel started, which is late in a

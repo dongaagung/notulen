@@ -136,6 +136,15 @@ extension TranscriptUpdate {
     }
 }
 
+extension PowerGuard {
+    /// Takes no real power assertion and hears sleep and wake only from
+    /// `notifications`, never the system's. `preventsSleep` still follows
+    /// `begin()`, sleep and `end()`.
+    static func fake(notifications: NotificationCenter = NotificationCenter()) -> PowerGuard {
+        PowerGuard(notificationCenter: notifications, takesSystemAssertion: false)
+    }
+}
+
 /// A clock that only moves when the test moves it.
 final class TestClock {
     var now = Date(timeIntervalSince1970: 1_800_000_000)
