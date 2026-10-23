@@ -7,6 +7,8 @@ struct OpenAICompatibleClient: LLMClient {
         case http(provider: String, status: Int, message: String)
         case api(provider: String, message: String)
         case badResponse(provider: String)
+        /// The reply hit the token limit and is cut off.
+        case truncated
 
         var errorDescription: String? {
             switch self {
@@ -17,6 +19,7 @@ struct OpenAICompatibleClient: LLMClient {
             case .http(let provider, let status, let message): "Kesalahan \(provider) \(status): \(message)"
             case .api(let provider, let message): "Kesalahan \(provider): \(message)"
             case .badResponse(let provider): "Respons \(provider) tidak terduga."
+            case .truncated: "Jawaban AI terpotong. Coba lagi."
             }
         }
 
@@ -61,6 +64,7 @@ struct OpenAICompatibleClient: LLMClient {
                         switch Self.decode(line: line) {
                         case .text(let text): continuation.yield(text)
                         case .error(let message): throw Failure.api(provider: providerName, message: message)
+                        case .truncated: throw Failure.truncated
                         case .done: break
                         case nil: continue
                         }
@@ -82,12 +86,21 @@ struct OpenAICompatibleClient: LLMClient {
                 struct Choice: Decodable {
                     struct Message: Decodable { let content: String? }
                     let message: Message
+                    let finishReason: String?
+
+                    enum CodingKeys: String, CodingKey {
+                        case message
+                        case finishReason = "finish_reason"
+                    }
                 }
                 let choices: [Choice]
             }
-            guard let text = try? JSONDecoder().decode(Reply.self, from: data).choices.first?.message.content else {
+            guard let choice = try? JSONDecoder().decode(Reply.self, from: data).choices.first,
+                  let text = choice.message.content
+            else {
                 throw Failure.badResponse(provider: providerName)
             }
+            if choice.finishReason == "length" { throw Failure.truncated }
             return text
         }
     }
@@ -227,6 +240,8 @@ struct OpenAICompatibleClient: LLMClient {
     enum StreamEvent: Equatable {
         case text(String)
         case error(String)
+        /// The token limit cut the reply off.
+        case truncated
         case done
     }
 
@@ -239,6 +254,12 @@ struct OpenAICompatibleClient: LLMClient {
             struct Choice: Decodable {
                 struct Delta: Decodable { let content: String? }
                 let delta: Delta?
+                let finishReason: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case delta
+                    case finishReason = "finish_reason"
+                }
             }
             struct ErrorBody: Decodable { let message: String? }
             let choices: [Choice]?
@@ -246,6 +267,7 @@ struct OpenAICompatibleClient: LLMClient {
         }
         guard let chunk = try? JSONDecoder().decode(Chunk.self, from: Data(payload.utf8)) else { return nil }
         if let error = chunk.error { return .error(error.message ?? "Kesalahan tidak diketahui") }
+        if chunk.choices?.first?.finishReason == "length" { return .truncated }
         guard let text = chunk.choices?.first?.delta?.content, !text.isEmpty else { return nil }
         return .text(text)
     }

@@ -74,4 +74,11 @@ struct SpeakerTests {
         let m = meeting(endedAt: Date(timeIntervalSince1970: 1000 + 4514))
         #expect(TranscriptFormatter.aiTranscript(lines: [], meeting: m).contains("Durasi: 1:15:14"))
     }
+
+    @Test func aiTranscriptSortsLinesByStart() {
+        let late = line(.remote(1), "Kedua", start: 20)
+        let early = line(.remote(1), "Pertama", start: 5)
+        let out = TranscriptFormatter.aiTranscript(lines: [late, early], meeting: meeting())
+        #expect(out.range(of: "Pertama")!.lowerBound < out.range(of: "Kedua")!.lowerBound)
+    }
 }

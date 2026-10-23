@@ -121,6 +121,22 @@ struct ClaudeClientHTTPTests {
         }
     }
 
+    @Test func streamCutOffByTokenLimitThrowsTruncated() async {
+        StubURLProtocol.respond(200, body: sse([
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\"a\":"}}"#,
+            #"{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#,
+        ]))
+        await #expect(throws: ClaudeClient.Failure.truncated) {
+            for try await _ in client.stream(request) {}
+        }
+        #expect(ClaudeClient.Failure.truncated.errorDescription == "Jawaban AI terpotong. Coba lagi.")
+    }
+
+    @Test func sendCutOffByTokenLimitThrowsTruncated() async {
+        StubURLProtocol.respond(200, body: #"{"content":[{"type":"text","text":"{\"a\":"}],"stop_reason":"max_tokens"}"#)
+        await #expect(throws: ClaudeClient.Failure.truncated) { _ = try await client.send(request) }
+    }
+
     @Test func httpErrorCarriesAPIMessage() async {
         StubURLProtocol.respond(401, body: #"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#)
         await #expect(throws: ClaudeClient.Failure.http(status: 401, message: "invalid x-api-key")) {
@@ -280,6 +296,28 @@ struct OpenAICompatibleHTTPTests {
             ((try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["response_format"] as? [String: Any])?["type"] as? String
         }
         #expect(formats == ["json_schema", "json_object"])
+    }
+
+    @Test func streamCutOffByTokenLimitThrowsTruncated() async {
+        ProviderStub.respond([(200, """
+            data: {"choices":[{"delta":{"content":"{\\"a\\":"},"finish_reason":null}]}
+
+            data: {"choices":[{"delta":{},"finish_reason":"length"}]}
+
+            data: [DONE]
+
+            """)])
+        await #expect(throws: OpenAICompatibleClient.Failure.truncated) {
+            _ = try await client.completeStreaming(request(.minutes))
+        }
+        #expect(OpenAICompatibleClient.Failure.truncated.errorDescription == "Jawaban AI terpotong. Coba lagi.")
+    }
+
+    @Test func completeCutOffByTokenLimitThrowsTruncated() async {
+        ProviderStub.respond([(200, #"{"choices":[{"message":{"content":"{"},"finish_reason":"length"}]}"#)])
+        await #expect(throws: OpenAICompatibleClient.Failure.truncated) {
+            _ = try await client.complete(request(.minutes))
+        }
     }
 
     @Test func rejectedKeyExplainsWhereToFixIt() async {

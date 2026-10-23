@@ -6,6 +6,6 @@ let package = Package(
     platforms: [.macOS(.v26)],
     targets: [
         .executableTarget(name: "Notulen", path: "App", exclude: ["Support"]),
-        .testTarget(name: "NotulenTests", dependencies: ["Notulen"], path: "Tests/NotulenTests"),
+        .testTarget(name: "NotulenTests", dependencies: ["Notulen"], path: "Tests/NotulenTests", resources: [.copy("Fixtures")]),
     ]
 )

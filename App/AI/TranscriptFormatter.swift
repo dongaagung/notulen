@@ -17,7 +17,8 @@ enum TranscriptFormatter {
         if !meeting.micOff.isEmpty {
             header.append("Mic pemilik mati: " + meeting.micOff.map(span).joined(separator: ", "))
         }
-        let body = lines.map {
+        // The journal can be slightly out of order.
+        let body = lines.sorted { $0.start < $1.start }.map {
             "[\(MeetingTime.format($0.start))] [[\(meeting.speaker(of: $0).rawValue)]]: \($0.text)"
         }
         return (header + [""] + body).joined(separator: "\n")

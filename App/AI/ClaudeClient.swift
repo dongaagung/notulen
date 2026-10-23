@@ -143,6 +143,8 @@ struct ClaudeClient: Sendable {
         case http(status: Int, message: String)
         case api(type: String, message: String)
         case refusal
+        /// The reply hit the token limit and is cut off.
+        case truncated
         case badResponse
 
         var errorDescription: String? {
@@ -151,6 +153,7 @@ struct ClaudeClient: Sendable {
             case .http(let status, let message): "Kesalahan API Claude \(status): \(message)"
             case .api(_, let message): "Kesalahan API Claude: \(message)"
             case .refusal: "Claude menolak menjawab permintaan ini."
+            case .truncated: "Jawaban AI terpotong. Coba lagi."
             case .badResponse: "Respons API Claude tidak terduga."
             }
         }
@@ -177,11 +180,12 @@ struct ClaudeClient: Sendable {
             try Self.check(response, body: data)
             let message = try Self.decoder.decode(MessageResponse.self, from: data)
             if message.stopReason == "refusal" { throw Failure.refusal }
+            if message.stopReason == "max_tokens" { throw Failure.truncated }
             return message
         }
     }
 
-    /// Streams text deltas. Throws `Failure.refusal` at the end if Claude declined.
+    /// Streams text deltas. Throws `Failure.refusal` at the end if Claude declined, `Failure.truncated` if the token limit cut the reply off.
     func stream(_ request: MessageRequest) -> AsyncThrowingStream<String, any Error> {
         var request = request
         request.stream = true
@@ -209,6 +213,7 @@ struct ClaudeClient: Sendable {
                         }
                     }
                     if stopReason == "refusal" { throw Failure.refusal }
+                    if stopReason == "max_tokens" { throw Failure.truncated }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
