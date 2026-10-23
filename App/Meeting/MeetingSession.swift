@@ -53,8 +53,11 @@ final class MeetingSession {
     /// Nothing records until `answerWake(continueRecording:)`.
     private(set) var wakeQuestion: TimeInterval?
     /// Writes the live notes while recording; nil without a usable AI
-    /// provider (the live view then shows `store.aiProblem`).
+    /// provider (the live view then shows `store.aiProblem`). Starts once
+    /// one is ready, also mid-meeting.
     private(set) var liveNotes: LiveNotesUpdater?
+    /// Why the live notes can't start although the AI provider is ready.
+    private(set) var liveNotesProblem: String?
     /// The meeting looks over: offer to finish it. Recording goes on.
     private(set) var offersFinish = false
     /// The meeting audio's loudest sample over the last tenth of a second,
@@ -86,6 +89,9 @@ final class MeetingSession {
     /// that records only that app starts, and to tell when it quit.
     private let appRunning: @MainActor (String) -> Bool
     private let power: PowerGuard
+    /// The active AI provider's client for the live notes, or nil while it
+    /// isn't ready.
+    private let aiClient: @MainActor (AppStore) -> (any LLMClient)?
 
     /// What the meeting records with; a wake starts capture with it again.
     private var configuration: Configuration?
@@ -139,7 +145,8 @@ final class MeetingSession {
         now: @escaping () -> Date = Date.init,
         audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() },
         appRunning: @escaping @MainActor (String) -> Bool = MeetingSession.isAppRunning,
-        power: PowerGuard = PowerGuard()
+        power: PowerGuard = PowerGuard(),
+        aiClient: @escaping @MainActor (AppStore) -> (any LLMClient)? = { $0.aiClient() }
     ) {
         self.store = store
         self.finisher = finisher
@@ -149,6 +156,7 @@ final class MeetingSession {
         self.makeAudioBuffer = audioBuffer
         self.appRunning = appRunning
         self.power = power
+        self.aiClient = aiClient
         power.onWillSleep = { [weak self] in self?.handleWillSleep() }
         power.onDidWake = { [weak self] in
             Task { [weak self] in await self?.handleDidWake() }
@@ -244,6 +252,7 @@ final class MeetingSession {
         micOff = MicOffTracker(spans: meeting.micOff)
         micOnFailure = nil
         micName = nil
+        liveNotesProblem = nil
         meetingAudio = makeAudioBuffer()
         capturesMeeting = false
         heardMeeting = false
@@ -716,33 +725,47 @@ final class MeetingSession {
 
     // MARK: Background work
 
-    /// Every 10 s while recording.
+    /// Runs `monitorTick()` every 10 s while recording.
     private func startMonitoring() {
         monitorTask?.cancel()
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled, phase == .recording else { return }
-                checkMeeting()
-                await updateLiveNotes()
+                await monitorTick()
             }
         }
     }
 
+    /// Warns or offers to finish when the meeting looks so, starts the live
+    /// notes once an AI provider is ready (its key may come mid-meeting),
+    /// and updates them when due. Every 10 s while recording; internal for
+    /// tests.
+    func monitorTick() async {
+        guard phase == .recording else { return }
+        checkMeeting()
+        startLiveNotes()
+        await updateLiveNotes()
+    }
+
     /// Makes the live notes updater once the meeting records, if an AI
-    /// provider is ready. A wake or resume keeps the one it has.
+    /// provider is ready. A wake or resume keeps the one it has. It starts
+    /// with the lines its notes haven't seen.
     private func startLiveNotes() {
-        guard liveNotes == nil, let snapshot = meeting, let client = store.aiClient() else { return }
+        guard liveNotes == nil, let snapshot = meeting, let client = aiClient(store) else { return }
         let template: PromptTemplate
         do {
             template = try PromptTemplate.load("live_notes")
         } catch {
-            post(.error(error.localizedDescription))
+            liveNotesProblem = "Catatan sementara tidak bisa dibuat: \(error.localizedDescription)"
             return
         }
+        liveNotesProblem = nil
         let updater = LiveNotesUpdater(
             client: client, template: template, meeting: { [weak self] in self?.meeting ?? snapshot },
             start: now())
+        // At most `maxLinesPerRequest` go per request; the rest wait.
+        for line in unseenLines(since: snapshot.liveNotesUpdatedAt, of: snapshot) { updater.add(line) }
         updater.onUpdate = { [weak self] notes, date in
             guard let self else { return }
             meeting?.liveNotes = notes
@@ -751,6 +774,16 @@ final class MeetingSession {
         }
         updater.onError = { [weak self] in self?.post(.error($0)) }
         liveNotes = updater
+    }
+
+    /// The transcript said after the notes' last update, in time order: that
+    /// update's request carried everything said before it. All of it
+    /// without notes yet.
+    private func unseenLines(since updatedAt: Date?, of meeting: Meeting) -> [TranscriptLine] {
+        let lines = transcript.lines.sorted { $0.start < $1.start }
+        guard let updatedAt else { return lines }
+        let seenUntil = updatedAt.timeIntervalSince(meeting.startedAt)
+        return lines.filter { $0.end > seenUntil }
     }
 
     /// Asks the live notes for an update when one is due; internal for tests.

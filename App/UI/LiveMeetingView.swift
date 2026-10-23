@@ -159,10 +159,12 @@ struct LiveMeetingView: View {
         return Self.metaLine(source: meeting.audioSource, language: meeting.language, mic: session.micName)
     }
 
-    /// Why no live notes are coming: without a usable AI provider the
-    /// session makes no updater.
+    /// Why no live notes are coming: what the AI provider still needs (the
+    /// notes start within 10 s of it being ready), or why the session can't
+    /// make them. Nil while they come, so only then the notes promise the
+    /// first ones.
     private var notesProblem: String? {
-        session.liveNotes == nil ? store.aiProblem : nil
+        store.aiProblem ?? session.liveNotesProblem
     }
 
     private var textScale: Binding<Double> {

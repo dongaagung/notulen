@@ -20,6 +20,8 @@ final class MeetingSessionTests {
     var appIsRunning = true
     /// The bundle IDs the session asked about, in order.
     private(set) var appsAsked: [String] = []
+    /// The AI client the live notes get; nil like a provider without its key.
+    var notesClient: FakeLLMClient?
     private(set) lazy var store = makeStore()
 
     deinit { try? FileManager.default.removeItem(at: root) }
@@ -30,9 +32,12 @@ final class MeetingSessionTests {
 
     /// The clock stands still, so both channels start at meeting time 0 and a
     /// line's times are its span.
+    /// `fakeAI`: the live notes get `notesClient` instead of the store's
+    /// provider.
     private func makeSession(
         _ speech: FakeSpeech = FakeSpeech(),
-        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
+        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() },
+        fakeAI: Bool = false
     ) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let clock = Date(timeIntervalSince1970: 1_800_000_000)
@@ -45,7 +50,8 @@ final class MeetingSessionTests {
                 appsAsked.append(id)
                 return appIsRunning
             },
-            power: power)
+            power: power,
+            aiClient: { [unowned self] store in fakeAI ? notesClient : store.aiClient() })
     }
 
     /// A meeting a crash cut off 300 s after it started, saved without lines.
@@ -118,6 +124,59 @@ final class MeetingSessionTests {
         #expect(session.liveNotes == nil)
         updater.add(TranscriptLine(channel: .meeting, speaker: .others, text: "x", start: 0, end: 1))
         #expect(updater.pendingLines.count == 1)
+    }
+
+    /// An API key entered mid-meeting: the next check starts the live notes
+    /// with everything said so far, and they update with that client.
+    @Test func liveNotesStartOnceTheAIProviderIsReady() async throws {
+        let session = makeSession(FakeSpeech(meeting: [.final("Selamat pagi", 1, 2)]), fakeAI: true)
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        meetingCapture.send()
+        #expect(await waitUntil { session.transcript.lines.count == 1 })
+        await session.monitorTick()
+        #expect(session.liveNotes == nil)
+
+        let client = FakeLLMClient(
+            reply: #"{"current_topic":0,"topics":[{"title":"Pembukaan","points":[{"text":"Salam","kind":"point"}]}]}"#)
+        notesClient = client
+        await session.monitorTick()
+        let updater = try #require(session.liveNotes)
+        #expect(updater.pendingLines.map(\.text) == ["Selamat pagi"])
+        #expect(session.liveNotesProblem == nil)
+
+        let clock = Date(timeIntervalSince1970: 1_800_000_000)
+        await updater.updateIfDue(now: clock.addingTimeInterval(LiveNotesUpdater.interval))
+        #expect(client.requests.first?.messages.first?.content.contains("Selamat pagi") == true)
+        #expect(session.meeting?.liveNotes?.topics.first?.title == "Pembukaan")
+        #expect(makeStore().meetings.first?.liveNotes?.topics.first?.title == "Pembukaan")
+        _ = await session.stop()
+    }
+
+    /// Notes started late on a meeting that had notes before a crash carry
+    /// on from them, with only the lines said since their last update.
+    @Test func lateLiveNotesGetOnlyTheLinesSinceTheLastUpdate() async throws {
+        var crashed = interruptedMeeting()
+        let notes = LiveNotes(currentTopic: 0, topics: [.init(title: "Lama", points: [])])
+        crashed.liveNotes = notes
+        crashed.liveNotesUpdatedAt = crashed.startedAt.addingTimeInterval(80)
+        store.save(crashed)
+        let journal = try TranscriptJournal(url: #require(store.transcriptURL(for: crashed.id)))
+        for (text, start) in [("Sebelum", 10.0), ("Sesudah", 100.0)] {
+            try journal.append(TranscriptLine(channel: .meeting, speaker: .others, text: text, start: start, end: start + 5))
+        }
+        journal.close()
+
+        let session = makeSession(fakeAI: true)
+        try session.resume(crashed)
+        #expect(await waitUntil { meetingCapture.isCapturing })
+        #expect(session.liveNotes == nil)
+        notesClient = FakeLLMClient(reply: "{}")
+        await session.monitorTick()
+        let updater = try #require(session.liveNotes)
+        #expect(updater.pendingLines.map(\.text) == ["Sesudah"])
+        #expect(updater.notes == notes)
+        _ = await session.stop()
     }
 
     @Test func secondMeetingCannotStart() async throws {
