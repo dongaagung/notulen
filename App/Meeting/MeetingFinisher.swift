@@ -109,8 +109,9 @@ final class MeetingFinisher {
     /// at a time per meeting, and not while its minutes are being written.
     /// A failure goes to `store.lastError`. A result is dropped when the
     /// minutes were rewritten meanwhile: it would translate old text.
-    func translate(_ id: UUID, to language: String) async {
-        guard running[id] == nil, translating[id] == nil, let meeting = store.meeting(id),
+    func translate(_ id: UUID, to requested: String) async {
+        let language = Translator.normalized(requested)
+        guard Translator.isValidLanguageCode(language), running[id] == nil, translating[id] == nil, let meeting = store.meeting(id),
               let source = meeting.minutes
         else { return }
         guard let translator = translator() else {
@@ -124,6 +125,8 @@ final class MeetingFinisher {
             guard var latest = store.meeting(id), latest.minutes == source else { return }
             latest.translations[language] = result
             store.save(latest)
+        } catch is CancellationError {
+            return
         } catch {
             store.lastError = "Terjemahan gagal: \(error.localizedDescription)"
         }

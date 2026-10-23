@@ -97,6 +97,26 @@ struct TranslationTests {
         #expect(!points.hasSameStructure(as: original))
     }
 
+    @Test func tokenMovedBetweenFieldsIsRejected() throws {
+        var original = try source()
+        original.topics[0].points = ["[[s1]] satu.", "dua."]
+        original.actionItems[0].task = "[[s1]] kerjakan"
+        original.actionItems[0].due = "kata"
+        var points = original
+        points.topics[0].points = ["satu.", "[[s1]] dua."]
+        #expect(!points.hasSameStructure(as: original))
+        var due = original
+        due.actionItems[0].task = "kerjakan"
+        due.actionItems[0].due = "[[s1]] kata"
+        #expect(!due.hasSameStructure(as: original))
+    }
+
+    @Test func languageCodesAreNormalized() {
+        #expect(Translator.normalized("EN") == "en")
+        #expect(Translator.normalized(" zh-hans ") == "zh-Hans")
+        #expect(Translator.normalized("pt-br") == "pt-BR")
+    }
+
     @Test func requestNamesTargetLanguage() throws {
         let original = try source()
         let request = try translator(FakeLLMClient(reply: "{}")).request(original, to: "en")
@@ -109,7 +129,7 @@ struct TranslationTests {
 
     @Test func languageCodeValidation() {
         for ok in ["en", "zh-Hans", "pt-BR", "fil", "es-419"] { #expect(Translator.isValidLanguageCode(ok), "\(ok)") }
-        for bad in ["", " ", "e", "english", "en_US", "en-", "-en", "e1"] { #expect(!Translator.isValidLanguageCode(bad), "\(bad)") }
+        for bad in ["id", "ID", "id-ID", "id-Latn", "", " ", "e", "english", "en_US", "en-", "-en", "e1"] { #expect(!Translator.isValidLanguageCode(bad), "\(bad)") }
         #expect(Translator.languageName("en") == "Inggris")
         #expect(Translator.languageName("zh-Hans") != nil)
         #expect(Translator.languageName("xx") == nil)
@@ -138,6 +158,16 @@ struct TranslationFinisherTests {
         #expect(store.meeting(meeting.id)?.translations["en"] == translated(original))
         #expect(finisher.translating.isEmpty)
         #expect(store.lastError == nil)
+    }
+
+    @Test func indonesianAndCaseVariantsAreHandled() async throws {
+        let original = try source()
+        let (finisher, store, meeting, _) = try setup(reply: try json(translated(original)))
+        await finisher.translate(meeting.id, to: "id")
+        await finisher.translate(meeting.id, to: "id-ID")
+        #expect(store.meeting(meeting.id)?.translations.isEmpty == true)
+        await finisher.translate(meeting.id, to: "EN")
+        #expect(store.meeting(meeting.id)?.translations.keys.sorted() == ["en"])
     }
 
     @Test func rejectedTranslationIsNotStoredAndReportsError() async throws {

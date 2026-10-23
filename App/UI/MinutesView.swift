@@ -214,11 +214,11 @@ struct MinutesView: View {
 
     /// The translation for the language shown, else the minutes as written.
     private var shownLanguage: String {
-        meeting.translations[language] != nil ? language : "id"
+        language != "id" && meeting.translations[language] != nil ? language : "id"
     }
 
     private var shownMinutes: Minutes? {
-        meeting.translations[shownLanguage] ?? meeting.minutes
+        shownLanguage == "id" ? meeting.minutes : meeting.translations[shownLanguage]
     }
 
     private func failure(_ reason: String) -> some View {
@@ -292,7 +292,7 @@ struct MinutesView: View {
                 ProgressView().controlSize(.small).help("Menerjemahkan…")
             }
         }
-        if !meeting.translations.isEmpty {
+        if meeting.translations.keys.contains(where: { $0 != "id" }) {
             ToolbarItem(placement: .primaryAction) { languagePicker }
         }
         ToolbarItem(placement: .primaryAction) { TextSizeControl(scale: textScale) }
@@ -305,7 +305,7 @@ struct MinutesView: View {
     private var languagePicker: some View {
         Picker("Bahasa", selection: Binding { shownLanguage } set: { language = $0 }) {
             Text("Bahasa Indonesia").tag("id")
-            ForEach(meeting.translations.keys.sorted(), id: \.self) { code in
+            ForEach(meeting.translations.keys.filter { $0 != "id" }.sorted(), id: \.self) { code in
                 Text(Translator.languageName(code).map { "Bahasa \($0)" } ?? code).tag(code)
             }
         }
@@ -369,6 +369,7 @@ struct MinutesView: View {
 
     private func translate(to code: String) {
         let id = meeting.id
+        let code = Translator.normalized(code)
         Task {
             await finisher.translate(id, to: code)
             if store.meeting(id)?.translations[code] != nil { language = code }

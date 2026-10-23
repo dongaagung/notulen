@@ -23,8 +23,27 @@ struct Translator: Sendable {
     }
 
     /// Whether `code` looks like a BCP 47 language tag ("en", "zh-Hans").
+    /// Indonesian is the original, never a translation.
     static func isValidLanguageCode(_ code: String) -> Bool {
-        code.wholeMatch(of: /[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*/) != nil
+        guard code.wholeMatch(of: /[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*/) != nil else { return false }
+        return !isIndonesian(code)
+    }
+
+    static func isIndonesian(_ code: String) -> Bool {
+        let lower = code.lowercased()
+        return lower == "id" || lower.hasPrefix("id-")
+    }
+
+    /// "EN" -> "en", "zh-hans" -> "zh-Hans", so one language has one key.
+    static func normalized(_ code: String) -> String {
+        let parts = code.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "-").map(String.init)
+        guard let first = parts.first else { return code }
+        let rest = parts.dropFirst().map { part -> String in
+            if part.count == 4, part.allSatisfy(\.isLetter) { return part.prefix(1).uppercased() + part.dropFirst().lowercased() }
+            if part.count == 2, part.allSatisfy(\.isLetter) { return part.uppercased() }
+            return part.lowercased()
+        }
+        return ([first.lowercased()] + rest).joined(separator: "-")
     }
 
     /// The language's name in Indonesian ("Inggris"), nil when not recognised.
@@ -38,6 +57,7 @@ struct Translator: Sendable {
     }
 
     func request(_ minutes: Minutes, to language: String) throws -> LLMRequest {
+        let language = Self.normalized(language)
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -62,34 +82,34 @@ extension Minutes {
     /// Same items in the same order, with the same IDs, times, owner
     /// speakers and speaker tokens; only the words may differ.
     func hasSameStructure(as other: Minutes) -> Bool {
-        func tokens(_ texts: [String?]) -> [String] {
-            texts.flatMap { $0.map { $0.matches(of: /\[\[[^\]]*\]\]/).map { String($0.output) } } ?? [] }.sorted()
+        func tokens(_ text: String?) -> [String] {
+            (text ?? "").matches(of: /\[\[[^\]]*\]\]/).map { String($0.output) }.sorted()
         }
-        func same(_ a: [String?], _ b: [String?]) -> Bool { tokens(a) == tokens(b) }
+        func same(_ a: String?, _ b: String?) -> Bool { tokens(a) == tokens(b) }
 
         guard decisions.count == other.decisions.count, actionItems.count == other.actionItems.count,
               openQuestions.count == other.openQuestions.count, topics.count == other.topics.count,
               speakerNameHints.count == other.speakerNameHints.count,
-              same([titleSuggestion], [other.titleSuggestion]), same([summary], [other.summary])
+              same(titleSuggestion, other.titleSuggestion), same(summary, other.summary)
         else { return false }
         for (a, b) in zip(decisions, other.decisions) {
-            guard a.id == b.id, a.at == b.at, same([a.text], [b.text]) else { return false }
+            guard a.id == b.id, a.at == b.at, same(a.text, b.text) else { return false }
         }
         for (a, b) in zip(actionItems, other.actionItems) {
             guard a.id == b.id, a.at == b.at, a.owner?.speaker == b.owner?.speaker,
-                  (a.owner == nil) == (b.owner == nil), same([a.task, a.due], [b.task, b.due])
+                  (a.owner == nil) == (b.owner == nil), same(a.task, b.task), same(a.due, b.due)
             else { return false }
         }
         for (a, b) in zip(openQuestions, other.openQuestions) {
-            guard a.id == b.id, a.at == b.at, same([a.question, a.context], [b.question, b.context]) else { return false }
+            guard a.id == b.id, a.at == b.at, same(a.question, b.question), same(a.context, b.context) else { return false }
         }
         for (a, b) in zip(topics, other.topics) {
-            guard a.start == b.start, a.end == b.end, a.points.count == b.points.count,
-                  same([a.title] + a.points, [b.title] + b.points)
+            guard a.start == b.start, a.end == b.end, a.points.count == b.points.count, same(a.title, b.title),
+                  zip(a.points, b.points).allSatisfy({ same($0, $1) })
             else { return false }
         }
         for (a, b) in zip(speakerNameHints, other.speakerNameHints) {
-            guard a.speaker == b.speaker, same([a.evidence], [b.evidence]) else { return false }
+            guard a.speaker == b.speaker, same(a.evidence, b.evidence) else { return false }
         }
         return true
     }
