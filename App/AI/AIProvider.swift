@@ -22,8 +22,8 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, CodingKeyRepresent
         case .deepSeek: "DeepSeek"
         case .groq: "Groq"
         case .openRouter: "OpenRouter"
-        case .ollama: "Ollama (on this Mac)"
-        case .custom: "Other OpenAI-compatible server"
+        case .ollama: "Ollama (di Mac ini)"
+        case .custom: "Server lain yang kompatibel dengan OpenAI"
         }
     }
 
@@ -31,7 +31,7 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, CodingKeyRepresent
     var shortName: String {
         switch self {
         case .anthropic: "Claude"
-        case .custom: "your server"
+        case .custom: "servermu"
         case .ollama: "Ollama"
         default: label
         }
@@ -60,8 +60,7 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, CodingKeyRepresent
     /// The key is used if there is one.
     var acceptsAPIKey: Bool { self != .ollama }
 
-    /// Keychain account for this provider's key. Anthropic keeps the
-    /// account it always used, so a saved key carries over.
+    /// Keychain account for this provider's key.
     var keychainAccount: String {
         self == .anthropic ? Keychain.apiKeyAccount : "\(rawValue)-api-key"
     }
@@ -75,7 +74,7 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable, CodingKeyRepresent
         case .openAI, .deepSeek, .openRouter: "sk-…"
         case .gemini: "AIza…"
         case .groq: "gsk_…"
-        case .ollama, .custom: "Optional"
+        case .ollama, .custom: "Opsional"
         }
     }
 }

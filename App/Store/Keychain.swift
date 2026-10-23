@@ -10,8 +10,8 @@ enum Keychain {
     struct Failure: LocalizedError {
         let status: OSStatus
         var errorDescription: String? {
-            let message = SecCopyErrorMessageString(status, nil) as String? ?? "unknown error"
-            return "Keychain error \(status): \(message)"
+            let message = SecCopyErrorMessageString(status, nil) as String? ?? "tidak diketahui"
+            return "Kesalahan Keychain \(status): \(message)"
         }
     }
 

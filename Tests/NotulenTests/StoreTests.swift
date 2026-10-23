@@ -78,6 +78,46 @@ struct StoreTests {
         #expect(second.settings.vocabulary == ["Altara"])
     }
 
+    @Test func formatsNonFiniteAsZero() {
+        #expect(MeetingTime.format(.nan) == "00:00")
+        #expect(MeetingTime.format(.infinity) == "00:00")
+    }
+
+    @Test func speakerIDEncodesAsPlainString() throws {
+        #expect(String(decoding: try JSONEncoder().encode([SpeakerID.remote(3)]), as: UTF8.self) == #"["s3"]"#)
+        #expect(try JSONDecoder().decode([SpeakerID].self, from: Data(#"["me"]"#.utf8)) == [.me])
+        #expect(throws: (any Error).self) { try JSONDecoder().decode([SpeakerID].self, from: Data(#"[""]"#.utf8)) }
+    }
+
+    private func sampleMeeting(_ title: String, at time: TimeInterval) -> Meeting {
+        Meeting(title: title, startedAt: Date(timeIntervalSince1970: time), status: .ready, language: "id-ID", audioSource: .systemWide)
+    }
+
+    @Test func corruptMeetingFileSkipsOnlyThatMeeting() throws {
+        let store = makeStore()
+        let good = sampleMeeting("Good", at: 200)
+        let bad = sampleMeeting("Bad", at: 100)
+        store.save(good)
+        store.save(bad)
+        let badFile = directory.appending(path: "meetings/\(bad.id.uuidString)/meeting.json")
+        try Data("{".utf8).write(to: badFile)
+        let reloaded = makeStore()
+        #expect(reloaded.meetings == [good])
+        #expect(reloaded.lastError?.contains(bad.id.uuidString) == true)
+    }
+
+    @Test func corruptSettingsStillLoadsMeetings() throws {
+        let store = makeStore()
+        let meeting = sampleMeeting("Kept", at: 100)
+        store.save(meeting)
+        store.settings.textScale = 2
+        try Data("{".utf8).write(to: directory.appending(path: "settings.json"))
+        let reloaded = makeStore()
+        #expect(reloaded.meetings == [meeting])
+        #expect(reloaded.settings == AppSettings())
+        #expect(reloaded.lastError != nil)
+    }
+
     @Test func settingsDefaultToIndonesian() {
         #expect(AppSettings().localeIdentifier == "id-ID")
     }
@@ -97,5 +137,8 @@ struct StoreTests {
         #expect(SpeakerID.remote(3).rawValue == "s3")
         #expect(SpeakerID(rawValue: "s12")?.remoteNumber == 12)
         #expect(SpeakerID.me.remoteNumber == nil)
+        #expect(SpeakerID(rawValue: "s-1")?.remoteNumber == nil)
+        #expect(SpeakerID(rawValue: "s+3")?.remoteNumber == nil)
+        #expect(SpeakerID(rawValue: "s")?.remoteNumber == nil)
     }
 }

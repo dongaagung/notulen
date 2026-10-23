@@ -26,8 +26,24 @@ struct SpeakerID: RawRepresentable, Codable, Hashable, Sendable {
 
     /// The N of "sN", or nil for "me" and "others".
     var remoteNumber: Int? {
-        guard rawValue.first == "s" else { return nil }
-        return Int(rawValue.dropFirst())
+        let digits = rawValue.dropFirst()
+        guard rawValue.first == "s", !digits.isEmpty, digits.allSatisfy(\.isASCII), digits.allSatisfy(\.isNumber)
+        else { return nil }
+        return Int(digits)
+    }
+
+    /// One JSON string ("s3"), the shape the AI replies use too.
+    init(from decoder: any Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        guard let id = SpeakerID(rawValue: value) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Empty speaker ID"))
+        }
+        self = id
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 

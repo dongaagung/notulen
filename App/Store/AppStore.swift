@@ -30,12 +30,18 @@ final class AppStore {
         }
         do {
             settings = try files.load(AppSettings.self, from: Self.settingsFile) ?? AppSettings()
-            meetings = try files.subdirectories(Self.meetingsDirectory)
-                .compactMap { try files.load(Meeting.self, from: "\(Self.meetingsDirectory)/\($0)/\(Self.meetingFile)") }
-                .sorted { $0.startedAt > $1.startedAt }
         } catch {
-            lastError = "Data tersimpan tidak bisa dimuat: \(error.localizedDescription)"
+            lastError = "Pengaturan tidak bisa dibaca; memakai pengaturan awal."
         }
+        // One unreadable meeting must not hide the others.
+        meetings = files.subdirectories(Self.meetingsDirectory).compactMap { name in
+            do {
+                return try files.load(Meeting.self, from: "\(Self.meetingsDirectory)/\(name)/\(Self.meetingFile)")
+            } catch {
+                lastError = "Meeting di folder \(name) tidak bisa dibaca."
+                return nil
+            }
+        }.sorted { $0.startedAt > $1.startedAt }
     }
 
     // MARK: Meetings
