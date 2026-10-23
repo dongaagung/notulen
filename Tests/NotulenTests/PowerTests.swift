@@ -439,13 +439,14 @@ final class PowerTests {
         _ = await session.stop()
     }
 
-    /// The recorded app's bundle ID may never show up as a running app (a
-    /// helper process's own ID), so the app counts as quit only once it was
-    /// seen running.
+    /// The app counts as quit only once a check while recording saw it
+    /// running: a meeting resumed after a crash may record an app that
+    /// isn't running any more.
     @Test func appNeverSeenRunningIsNotOfferedAsQuit() async throws {
-        appIsRunning = false
         let session = makeSession()
+        // Running when the meeting starts, gone from the first check on.
         try session.begin(zoomConfig)
+        appIsRunning = false
         #expect(await waitUntil { session.phase == .recording })
         session.checkMeeting()
         clock.advance(30)

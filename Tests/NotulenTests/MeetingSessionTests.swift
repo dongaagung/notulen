@@ -12,6 +12,14 @@ final class MeetingSessionTests {
     let power = PowerGuard.fake()
     let config = MeetingSession.Configuration(
         title: "Weekly sync", audioSource: .systemWide, locale: Locale(identifier: "id-ID"), vocabulary: [])
+    /// Records only Zoom.
+    let zoomConfig = MeetingSession.Configuration(
+        title: "Weekly sync", audioSource: .app(bundleID: "us.zoom.xos", name: "Zoom"),
+        locale: Locale(identifier: "id-ID"), vocabulary: [])
+    /// What the fake running-app check answers.
+    var appIsRunning = true
+    /// The bundle IDs the session asked about, in order.
+    private(set) var appsAsked: [String] = []
     private(set) lazy var store = makeStore()
 
     deinit { try? FileManager.default.removeItem(at: root) }
@@ -32,7 +40,21 @@ final class MeetingSessionTests {
         return MeetingSession(
             store: store, finisher: MeetingFinisher(store: store, diarizer: nil) { nil },
             devices: { _ in devices }, speech: { _, _ in speech }, now: { clock },
-            audioBuffer: audioBuffer, power: power)
+            audioBuffer: audioBuffer,
+            appRunning: { [unowned self] id in
+                appsAsked.append(id)
+                return appIsRunning
+            },
+            power: power)
+    }
+
+    /// A meeting a crash cut off 300 s after it started, saved without lines.
+    private func interruptedMeeting() -> Meeting {
+        let meeting = Meeting(
+            title: "Weekly sync", startedAt: Date(timeIntervalSince1970: 1_800_000_000 - 300),
+            status: .interrupted, language: "id-ID", audioSource: .systemWide)
+        store.save(meeting)
+        return meeting
     }
 
     private func journal(_ meeting: Meeting) throws -> [TranscriptLine] {
@@ -173,29 +195,60 @@ final class MeetingSessionTests {
         #expect(session.notices == [.speakerAudioFull])
     }
 
-    @Test func micKeepsRecordingWhenMeetingAudioFails() async throws {
-        let failure = ProcessTapCapture.Failure.appNotRunning("Zoom")
+    /// Review Focus 5: a meeting app that isn't running is refused before
+    /// anything is saved, with what to do instead.
+    @Test func refusesAMeetingAppThatIsNotRunning() async throws {
+        appIsRunning = false
+        let session = makeSession()
+        #expect(throws: MeetingSession.StartError.appNotRunning("Zoom")) { try session.begin(zoomConfig) }
+        #expect(appsAsked == ["us.zoom.xos"])
+        #expect(session.phase == .idle && session.meeting == nil)
+        #expect(store.meetings.isEmpty && makeStore().meetings.isEmpty)
+        #expect(!meetingCapture.isCapturing && !micCapture.isCapturing && !power.preventsSleep)
+
+        // System-wide audio has no app to check.
+        try session.begin(config)
+        #expect(appsAsked == ["us.zoom.xos"])
+        #expect(await waitUntil { session.phase == .recording })
+        _ = await session.stop()
+    }
+
+    @Test func startsWhenTheMeetingAppRuns() async throws {
+        let session = makeSession()
+        try session.begin(zoomConfig)
+        #expect(appsAsked.first == "us.zoom.xos")
+        #expect(await waitUntil { session.phase == .recording })
+        _ = await session.stop()
+    }
+
+    /// A new meeting without its meeting audio isn't worth recording: the
+    /// mic alone would leave out everyone else.
+    @Test func newMeetingFailsWhenItsMeetingAudioCannotStart() async throws {
+        let failure = ProcessTapCapture.Failure.unsupportedFormat
+        meetingCapture.startError = failure
+        let session = makeSession()
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .idle })
+        let saved = try #require(makeStore().meetings.first)
+        #expect(saved.status == .failed)
+        #expect(saved.failure == failure.localizedDescription)
+        #expect(session.notices == [.error(failure.localizedDescription)])
+        #expect(!micCapture.isCapturing && !power.preventsSleep)
+    }
+
+    /// Recording that goes on after a crash keeps whatever channel works.
+    @Test func micKeepsRecordingWhenMeetingAudioFailsAfterAResume() async throws {
+        let failure = ProcessTapCapture.Failure.unsupportedFormat
         meetingCapture.startError = failure
         let session = makeSession(FakeSpeech(mic: [.final("Halo", 0, 1)]))
-        try session.begin(config)
-        #expect(await waitUntil { session.phase == .recording })
+        try session.resume(interruptedMeeting())
+        #expect(await waitUntil { micCapture.isCapturing })
+        #expect(session.phase == .recording)
         #expect(session.notices == [.error(failure.localizedDescription)])
         micCapture.send()
         #expect(await waitUntil { session.transcript.lines.count == 1 })
         _ = await session.stop()
         #expect(store.meetings.first?.status == .ready)
-    }
-
-    @Test func meetingFailsWhenNoChannelStarts() async throws {
-        meetingCapture.startError = ProcessTapCapture.Failure.unsupportedFormat
-        micCapture.startError = MicCapture.Failure.noInputDevice
-        let session = makeSession()
-        try session.begin(config)
-        #expect(await waitUntil { session.phase == .idle })
-        #expect(store.meetings.first?.status == .failed)
-        #expect(store.meetings.first?.failure != nil)
-        #expect(session.notices.count == 2)
-        #expect(!power.preventsSleep)
     }
 
     @Test func cancellingTheStartRemovesTheMeeting() async throws {
@@ -217,5 +270,7 @@ final class MeetingSessionTests {
         #expect(MeetingNotice.speakerAudioFailed.message == "Audio meeting untuk pemisahan pembicara gagal diproses.")
         #expect(MeetingSession.StartError.alreadyRecording.localizedDescription
             == "Meeting lain masih direkam. Selesaikan dulu.")
+        #expect(MeetingSession.StartError.appNotRunning("Zoom").localizedDescription
+            == "Zoom tidak sedang berjalan. Buka app meeting-nya dulu, atau pilih Semua audio sistem.")
     }
 }

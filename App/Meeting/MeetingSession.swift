@@ -21,11 +21,14 @@ final class MeetingSession {
         case alreadyRecording
         /// Application Support can't be opened, so the transcript couldn't be saved.
         case noStorage
+        /// The one app the meeting would record, by name, isn't running.
+        case appNotRunning(String)
 
         var errorDescription: String? {
             switch self {
             case .alreadyRecording: "Meeting lain masih direkam. Selesaikan dulu."
             case .noStorage: "Folder data Notulen tidak bisa dibuka, jadi transkrip tidak bisa disimpan."
+            case .appNotRunning(let name): ProcessTapCapture.Failure.appNotRunning(name).localizedDescription
             }
         }
     }
@@ -79,7 +82,8 @@ final class MeetingSession {
     private let makeSpeech: @Sendable (Locale, [String]) -> any SttProvider
     private let now: () -> Date
     private let makeAudioBuffer: () -> MeetingAudioBuffer
-    /// Whether the app with this bundle ID runs.
+    /// Whether the app with this bundle ID runs: checked before a meeting
+    /// that records only that app starts, and to tell when it quit.
     private let appRunning: @MainActor (String) -> Bool
     private let power: PowerGuard
 
@@ -113,9 +117,9 @@ final class MeetingSession {
     /// when the meeting audio first starts, and kept for the whole meeting so
     /// a declined offer stays declined across a wake.
     private var endDetector: MeetingEndDetector?
-    /// The one app the meeting records was seen running. Only then does its
-    /// absence mean it quit: a helper process's own bundle ID may never
-    /// show up as a running app.
+    /// The one app the meeting records was seen running while recording.
+    /// Only then does its absence mean it quit: a meeting that goes on after
+    /// a crash may record an app that isn't running any more.
     private var appSeenRunning = false
     /// Meeting time the Mac went to sleep at, until recording goes on.
     private var sleptAt: TimeInterval?
@@ -134,9 +138,7 @@ final class MeetingSession {
         },
         now: @escaping () -> Date = Date.init,
         audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() },
-        appRunning: @escaping @MainActor (String) -> Bool = {
-            !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty
-        },
+        appRunning: @escaping @MainActor (String) -> Bool = MeetingSession.isAppRunning,
         power: PowerGuard = PowerGuard()
     ) {
         self.store = store
@@ -153,13 +155,24 @@ final class MeetingSession {
         }
     }
 
+    /// Whether the app with this bundle ID runs: as an app, or as a process
+    /// Core Audio plays for under that ID, the way the tap finds it (a
+    /// browser's audio may come from a helper outside any app bundle).
+    static func isAppRunning(_ bundleID: String) -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+            || AudioProcessList.current().contains { $0.belongs(to: bundleID) }
+    }
+
     // MARK: Lifecycle
 
     /// Creates and saves the meeting and opens its journal, then starts in
     /// the background so the start can be cancelled while the speech model
-    /// downloads.
+    /// downloads. Refuses a meeting app that isn't running: nothing is saved.
     func begin(_ configuration: Configuration) throws {
         guard phase == .idle else { throw StartError.alreadyRecording }
+        if case .app(let bundleID, let name) = configuration.audioSource, !appRunning(bundleID) {
+            throw StartError.appNotRunning(name)
+        }
         let meeting = Meeting(
             title: configuration.title.trimmingCharacters(in: .whitespacesAndNewlines),
             startedAt: now(), status: .recording,
@@ -283,7 +296,14 @@ final class MeetingSession {
             meeting?.startedAt = now()
             if let meeting { store.save(meeting) }
         }
-        startCapture(devices, micAllowed: micAllowed, speech: speech)
+        do {
+            try startCapture(devices, micAllowed: micAllowed, speech: speech, needsMeetingAudio: gap == nil)
+        } catch {
+            let message = error.localizedDescription
+            post(.error(message))
+            failStart(message, resumedAfter: gap)
+            return
+        }
         startupStatus = nil
         guard !listeners.isEmpty else {
             failStart(notices.map(\.message).joined(separator: "\n"), resumedAfter: gap)
@@ -426,9 +446,13 @@ final class MeetingSession {
 
     // MARK: Pipeline
 
-    /// Starts both channels. A channel that can't start is reported, and the
-    /// other records on its own.
-    private func startCapture(_ devices: CaptureDevices, micAllowed: Bool, speech: any SttProvider) {
+    /// Starts both channels. A new meeting needs its meeting audio
+    /// (`needsMeetingAudio`): without it this throws, before the mic opens.
+    /// Otherwise, as when recording goes on after a crash or a sleep, a
+    /// channel that can't start is reported, and the other records on its own.
+    private func startCapture(
+        _ devices: CaptureDevices, micAllowed: Bool, speech: any SttProvider, needsMeetingAudio: Bool
+    ) throws {
         reportDeviceChanges(of: devices)
         capturesMeeting = false
         do {
@@ -445,6 +469,7 @@ final class MeetingSession {
             meetingAudio.beginSegment(atMeetingTime: offset)
             listen(to: tee(stream, into: meetingAudio), channel: .meeting, from: offset, with: speech)
         } catch {
+            if needsMeetingAudio { throw error }
             post(.error(error.localizedDescription))
         }
         guard micAllowed else {

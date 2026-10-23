@@ -187,7 +187,7 @@ final class ProcessTapCapture: AudioCapturing {
             description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
         case .app(let bundleID, let name):
             let processes = AudioProcessList.current()
-                .filter { $0.appBundleID == bundleID || $0.bundleID == bundleID }
+                .filter { $0.belongs(to: bundleID) }
                 .map(\.objectID)
             guard !processes.isEmpty else { throw Failure.appNotRunning(name) }
             description = CATapDescription(stereoMixdownOfProcesses: processes)

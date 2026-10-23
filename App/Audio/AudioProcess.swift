@@ -14,6 +14,11 @@ struct AudioProcess: Identifiable, Hashable, Sendable {
     let isPlayingAudio: Bool
 
     var id: AudioObjectID { objectID }
+
+    /// Whether the process is the app `bundleID` or one of its helpers.
+    func belongs(to bundleID: String) -> Bool {
+        appBundleID == bundleID || self.bundleID == bundleID
+    }
 }
 
 /// One pickable app in the audio-source picker.
