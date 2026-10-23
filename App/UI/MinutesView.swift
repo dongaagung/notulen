@@ -26,6 +26,8 @@ struct MinutesView: View {
     @FocusState private var editsTitle: Bool
     @ViewState private var confirmsRegenerate = false
     @ViewState private var renamesSpeakers = false
+    /// "Disalin" shows for a moment after the minutes were copied.
+    @ViewState private var copied = false
     /// The journal has been read, so an empty `lines` means nothing was said.
     @ViewState private var linesLoaded = false
     /// The page's width, for `LiveMeetingView.sidePadding(forWidth:)`.
@@ -84,6 +86,24 @@ struct MinutesView: View {
                     .textScalePinch(textScale)
                     .background { Color.canvas.ignoresSafeArea() }
             }
+        }
+        .overlay(alignment: .bottom) {
+            if copied {
+                Label("Disalin", systemImage: "checkmark")
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.bottom, 24)
+                    .transition(.opacity)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .animation(.default, value: copied)
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .milliseconds(1500))
+            copied = false
         }
         .navigationTitle(meeting.title.isEmpty ? "Tanpa judul" : meeting.title)
         .toolbar { toolbar }
@@ -254,15 +274,15 @@ struct MinutesView: View {
         ToolbarItem(placement: .primaryAction) { moreMenu }
     }
 
-    /// Markdown, PDF and Notion come in later tasks.
+    /// PDF and Notion come in later tasks.
     private var shareMenu: some View {
         Menu {
-            EmptyView()
+            Button("Salin sebagai Markdown") { copyMarkdown() }
         } label: {
             Label("Bagikan", systemImage: "square.and.arrow.up")
         }
         .menuIndicator(.hidden)
-        .disabled(true)
+        .disabled(meeting.status != .ready || meeting.minutes == nil)
         .help("Bagikan")
     }
 
@@ -288,6 +308,14 @@ struct MinutesView: View {
 
     private var textScale: Binding<Double> {
         Binding { store.settings.textScale } set: { store.settings.textScale = $0 }
+    }
+
+    private func copyMarkdown() {
+        guard let minutes = meeting.minutes else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(MinutesMarkdown.render(minutes, meeting: meeting), forType: .string)
+        copied = true
     }
 
     private func jump(to time: TimeInterval) {
