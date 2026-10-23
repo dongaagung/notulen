@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A meeting that has ended: its minutes, or why there are none, and its
 /// transcript, switched with Notulen | Transkrip in the toolbar. One reading
@@ -31,6 +32,8 @@ struct MinutesView: View {
     @ViewState private var choosesLanguage = false
     /// "Disalin" shows for a moment after the minutes were copied.
     @ViewState private var copied = false
+    /// A PDF is being written; another export waits for it.
+    @ViewState private var exportsPDF = false
     /// The journal has been read, so an empty `lines` means nothing was said.
     @ViewState private var linesLoaded = false
     /// The page's width, for `LiveMeetingView.sidePadding(forWidth:)`.
@@ -312,10 +315,12 @@ struct MinutesView: View {
         .help("Bahasa notulen")
     }
 
-    /// PDF and Notion come in later tasks.
+    /// Exports the minutes in the language shown. Notion comes in a later task.
     private var shareMenu: some View {
         Menu {
             Button("Salin sebagai Markdown") { copyMarkdown() }
+            Button("Ekspor PDF…") { exportPDF() }
+                .disabled(exportsPDF)
         } label: {
             Label("Bagikan", systemImage: "square.and.arrow.up")
         }
@@ -365,6 +370,32 @@ struct MinutesView: View {
         pasteboard.clearContents()
         pasteboard.setString(MinutesMarkdown.render(minutes, meeting: meeting), forType: .string)
         copied = true
+    }
+
+    /// Asks where to save, then writes the PDF there.
+    private func exportPDF() {
+        guard let minutes = shownMinutes else { return }
+        let html = MinutesHTML.render(minutes, meeting: meeting)
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = PDFExporter.fileName(
+            title: MinutesFormatting.title(minutes, meeting: meeting), date: meeting.startedAt)
+        Task {
+            let response = if let window = NSApp.keyWindow {
+                await panel.beginSheetModal(for: window)
+            } else {
+                panel.runModal()
+            }
+            guard response == .OK, let url = panel.url else { return }
+            exportsPDF = true
+            defer { exportsPDF = false }
+            do {
+                try await PDFExporter.export(html: html, to: url)
+            } catch {
+                store.lastError = "PDF tidak bisa diekspor: \(error.localizedDescription)"
+            }
+        }
     }
 
     private func translate(to code: String) {

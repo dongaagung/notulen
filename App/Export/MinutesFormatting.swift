@@ -80,6 +80,13 @@ enum MinutesFormatting {
         return heard.isEmpty ? "pemegang tidak disebut" : heard
     }
 
+    /// False when `owner` says "Pembicara N" or "pemegang tidak disebut":
+    /// the app shows those in italics.
+    static func ownerIsNamed(_ item: Minutes.ActionItem, in meeting: Meeting) -> Bool {
+        if let speaker = item.owner?.speaker, meeting.hasName(speaker) { return true }
+        return !oneLine(item.owner?.name ?? "", in: meeting).isEmpty
+    }
+
     /// The deadline as said, or nil when nobody gave one.
     static func due(_ item: Minutes.ActionItem, in meeting: Meeting) -> String? {
         let due = oneLine(item.due ?? "", in: meeting)
