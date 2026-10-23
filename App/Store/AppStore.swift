@@ -71,6 +71,26 @@ final class AppStore {
         files?.directory.appending(path: "\(Self.meetingFolder(id))/\(Self.transcriptFile)")
     }
 
+    /// The meeting's journaled lines; empty before the first one.
+    func transcriptLines(for id: UUID) throws -> [TranscriptLine] {
+        guard let url = transcriptURL(for: id), FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try TranscriptJournal.read(url)
+    }
+
+    // MARK: Recovery
+
+    /// Meetings a crash or force quit left recording become interrupted
+    /// (saved). Returns every interrupted meeting, newest first, for the
+    /// owner to resume or finish; quitting while recording leaves one too.
+    /// Call at launch only: later, a recording meeting is the one recording now.
+    func recoverInterrupted() -> [Meeting] {
+        for var meeting in meetings where meeting.status == .recording {
+            meeting.status = .interrupted
+            save(meeting)
+        }
+        return meetings.filter { $0.status == .interrupted }
+    }
+
     private static let meetingFile = "meeting.json"
     private static let transcriptFile = "transcript.jsonl"
 
@@ -91,4 +111,10 @@ final class AppStore {
             lastError = "Tidak bisa menyimpan \(path): \(error.localizedDescription)"
         }
     }
+}
+
+extension [TranscriptLine] {
+    /// Meeting time where these lines end: where a recording that stopped
+    /// unexpectedly last heard anything. 0 without lines.
+    var recordedUntil: TimeInterval { map(\.end).max() ?? 0 }
 }

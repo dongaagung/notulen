@@ -47,7 +47,7 @@ final class MeetingSession {
         phase == .recording || phase == .stopping ? meetingTime : 0
     }
 
-    /// Meeting audio still silent this long after the start raises `.silent`.
+    /// Meeting audio still silent this long after capture starts raises `.silent`.
     static let silenceDelay: TimeInterval = 20
 
     private let store: AppStore
@@ -102,22 +102,64 @@ final class MeetingSession {
             audioSource: configuration.audioSource)
         guard let journalURL = store.transcriptURL(for: meeting.id) else { throw StartError.noStorage }
         store.save(meeting)
+        let journal: TranscriptJournal
         do {
             journal = try TranscriptJournal(url: journalURL)
         } catch {
             store.delete(meeting)
             throw error
         }
+        take(meeting, journal: journal, transcript: Transcript())
+        phase = .starting
+        startTask = Task { await start(configuration, resuming: false) }
+    }
+
+    /// Records on in a meeting a crash or quit cut off: its journaled lines
+    /// come back, and the time since the last one is a crash gap. Meeting
+    /// time runs from the original start, so the meeting counts as recording
+    /// at once; capture restarts in the background.
+    func resume(_ meeting: Meeting) throws {
+        guard phase == .idle else { throw StartError.alreadyRecording }
+        guard let journalURL = store.transcriptURL(for: meeting.id) else { throw StartError.noStorage }
+        let lines = try store.transcriptLines(for: meeting.id)
+        let journal = try TranscriptJournal(url: journalURL)
+        var meeting = meeting
+        let stoppedAt = lines.recordedUntil
+        let resumedAt = now().timeIntervalSince(meeting.startedAt)
+        meeting.gaps.append(Gap(span: TimeSpan(start: stoppedAt, end: max(stoppedAt, resumedAt)), reason: .crash))
+        meeting.status = .recording
+        meeting.endedAt = nil
+        store.save(meeting)
+        take(meeting, journal: journal, transcript: Transcript(lines: lines))
+        phase = .recording
+        let configuration = Configuration(
+            title: meeting.title, audioSource: meeting.audioSource,
+            locale: Locale(identifier: meeting.language), vocabulary: store.settings.vocabulary)
+        startTask = Task { await start(configuration, resuming: true) }
+    }
+
+    /// Ends a meeting a crash or quit cut off, where its recording stopped.
+    /// Task 17 routes it to the finisher.
+    func finishInterrupted(_ meeting: Meeting) async {
+        guard meeting.id != self.meeting?.id || phase == .idle else { return }
+        var meeting = meeting
+        let lines = (try? store.transcriptLines(for: meeting.id)) ?? []
+        meeting.endedAt = meeting.startedAt.addingTimeInterval(lines.recordedUntil)
+        meeting.status = .ready
+        store.save(meeting)
+    }
+
+    /// Starts over with `meeting`, whose final lines go to `journal`.
+    private func take(_ meeting: Meeting, journal: TranscriptJournal, transcript: Transcript) {
         self.meeting = meeting
-        transcript = Transcript()
+        self.journal = journal
+        self.transcript = transcript
         notices = []
         offsets = [:]
         meetingAudio = makeAudioBuffer()
         capturesMeeting = false
         heardMeeting = false
         startupStatus = "Menyiapkan pengenalan suara…"
-        phase = .starting
-        startTask = Task { await start(configuration) }
     }
 
     /// Stops a start that is still getting ready, such as downloading the
@@ -133,13 +175,14 @@ final class MeetingSession {
         phase = .idle
     }
 
-    private func start(_ configuration: Configuration) async {
+    /// A resumed meeting keeps its start time; it is already recording.
+    private func start(_ configuration: Configuration, resuming: Bool) async {
         let speech = makeSpeech(configuration.locale, configuration.vocabulary)
         do {
             // Downloads the on-device speech model on first use.
             try await speech.prepare { [weak self] fraction in
                 Task { @MainActor [weak self] in
-                    guard let self, phase == .starting else { return }
+                    guard let self, startupStatus != nil else { return }
                     startupStatus = "Mengunduh model bahasa… \(Int(fraction * 100))%"
                 }
             }
@@ -158,9 +201,11 @@ final class MeetingSession {
         let micAllowed = await type(of: devices.mic).requestPermission()
         guard !Task.isCancelled else { return }
 
-        // Meeting time 0 is when capture starts, not when the start began.
-        meeting?.startedAt = now()
-        if let meeting { store.save(meeting) }
+        if !resuming {
+            // Meeting time 0 is when capture starts, not when the start began.
+            meeting?.startedAt = now()
+            if let meeting { store.save(meeting) }
+        }
         startCapture(devices, micAllowed: micAllowed, speech: speech)
         startupStatus = nil
         guard !listeners.isEmpty else {
@@ -174,8 +219,24 @@ final class MeetingSession {
     /// Stops capture, waits up to 3 s for the last lines, and closes the
     /// meeting. Nil unless a meeting is recording.
     func stop() async -> Meeting? {
+        await endRecording(as: .ready)
+    }
+
+    /// Stops recording without ending the meeting, as when the owner quits:
+    /// it's saved as interrupted, to resume or finish at the next launch.
+    func interrupt() async {
+        _ = await endRecording(as: .interrupted)
+    }
+
+    /// Stops capture, waits up to 3 s for the last lines, then saves the
+    /// meeting as `status` and lets go of its journal and audio.
+    private func endRecording(as status: MeetingStatus) async -> Meeting? {
         guard phase == .recording else { return nil }
         phase = .stopping
+        // A resumed meeting may still be getting capture ready.
+        startTask?.cancel()
+        startTask = nil
+        startupStatus = nil
         monitorTask?.cancel()
         monitorTask = nil
         stopCapture()
@@ -187,8 +248,9 @@ final class MeetingSession {
         relays = []
         transcript.discardVolatile(.meeting)
         transcript.discardVolatile(.mic)
-        meeting?.endedAt = now()
-        meeting?.status = .ready
+        meeting?.status = status
+        // An interrupted meeting goes on later.
+        if status != .interrupted { meeting?.endedAt = now() }
         if let meeting { store.save(meeting) }
         journal?.close()
         journal = nil
@@ -385,8 +447,11 @@ final class MeetingSession {
         }
     }
 
+    /// Counts from when the meeting channel started, which is late in a
+    /// resumed meeting.
     private func warnIfMeetingSilent() {
-        guard capturesMeeting, !heardMeeting, meetingTime > Self.silenceDelay else { return }
+        guard capturesMeeting, !heardMeeting, meetingTime - (offsets[.meeting] ?? 0) > Self.silenceDelay
+        else { return }
         post(.silent)
     }
 
