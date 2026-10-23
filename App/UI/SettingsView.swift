@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Pengaturan (⌘,): Umum and AI. Notion and Tentang tabs come later.
+/// Pengaturan (⌘,): Umum, AI and Tentang. A Notion tab comes later.
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -9,6 +9,8 @@ struct SettingsView: View {
             Form { AIProviderSection() }
                 .formStyle(.grouped)
                 .tabItem { Label("AI", systemImage: "sparkles") }
+            AboutSettings()
+                .tabItem { Label("Tentang", systemImage: "info.circle") }
         }
         .frame(width: 560, height: 520)
     }
@@ -101,5 +103,25 @@ private struct GeneralSettings: View {
 
     private static func languageName(_ id: String) -> String {
         indonesian.localizedString(forIdentifier: id) ?? id
+    }
+}
+
+/// App version and the model attribution CC-BY-4.0 asks for.
+private struct AboutSettings: View {
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Notulen", value: "Versi \(version)")
+            }
+            Section {
+                Text("Pemisahan pembicara memakai FluidAudio (Apache-2.0) dan model pyannote community-1 (CC-BY-4.0) dari pyannote, WeSpeaker, BUT Speech@FIT, dan Fluid Inference.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }

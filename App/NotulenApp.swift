@@ -1,4 +1,5 @@
 import AppKit
+import FluidAudio
 import SwiftUI
 
 @main
@@ -9,6 +10,11 @@ struct NotulenApp: App {
     private var store: AppStore { delegate.store }
     private var session: MeetingSession { delegate.session }
     private var finisher: MeetingFinisher { delegate.finisher }
+
+    init() {
+        // The models ship inside the app; never download them.
+        ModelHub.offlineMode = true
+    }
 
     var body: some Scene {
         WindowGroup("Notulen") {

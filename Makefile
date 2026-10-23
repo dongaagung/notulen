@@ -21,6 +21,9 @@ TESTING := -Xswiftc -F$(CLT_DEV)/Frameworks -Xlinker -F$(CLT_DEV)/Frameworks \
            -Xlinker -rpath -Xlinker $(CLT_DEV)/Frameworks \
            -Xlinker -rpath -Xlinker $(CLT_DEV)/usr/lib
 
+# Pinned diarization models, bundled so the app never downloads at runtime.
+MODELS := Models/speaker-diarization/.fluidaudio-revision
+
 # $(call bundle,<executable>,<app>): assemble and ad-hoc sign an .app.
 define bundle
 	rm -rf "$(2)"
@@ -29,14 +32,23 @@ define bundle
 	cp $(SUPPORT)/Info.plist "$(2)/Contents/"
 	cp $(SUPPORT)/AppIcon.icns "$(2)/Contents/Resources/"
 	cp -R prompts "$(2)/Contents/Resources/"
+	cp -R Models "$(2)/Contents/Resources/FluidAudioModels"
 	set -o pipefail; codesign --force --options runtime \
 		--entitlements $(SUPPORT)/$(NAME).entitlements --sign - "$(2)" 2>&1 \
 		| sed '/replacing existing signature/d'
 endef
 
-.PHONY: build run test install uninstall icon
+.PHONY: build run test install uninstall icon models
 
-build:
+$(MODELS):
+	scripts/fetch-models.sh
+
+# Forces a fresh download.
+models:
+	scripts/fetch-models.sh
+
+
+build: $(MODELS)
 	set -o pipefail; swift build $(SWIFTPM) 2>&1 | $(PRETTY)
 	$(call bundle,.build/debug/$(NAME),$(APP))
 
@@ -48,7 +60,7 @@ test:
 
 # Optimized build, installed in /Applications to open from Launchpad,
 # Spotlight or the Dock. Quits a running copy first. Re-run after changes.
-install:
+install: $(MODELS)
 	set -o pipefail; swift build -c release $(SWIFTPM) 2>&1 | $(PRETTY)
 	$(call bundle,.build/release/$(NAME),$(RELEASE))
 	osascript -e 'quit app id "$(BUNDLE_ID)"' 2>/dev/null || true
