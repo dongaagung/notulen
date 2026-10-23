@@ -9,6 +9,8 @@ struct NotionClient {
     /// Notion's limit for a children array.
     static let batchSize = 100
     static let maxRetries = 3
+    /// Longest wait honoured after a 429, in seconds.
+    static let maxRetryAfter = 60.0
 
     enum Failure: LocalizedError, Equatable {
         /// 404: the page doesn't exist or isn't shared with the integration.
@@ -51,8 +53,13 @@ struct NotionClient {
     }
 
     /// Creates the page under `parent`; the first 100 blocks go with it, the
-    /// rest are appended. Returns the new page's ID.
-    func createPage(parent: String, title: String, children: [JSONValue]) async throws -> String {
+    /// rest are appended. `onCreated` hears the new page's ID as soon as the
+    /// page exists, before the rest is appended, so a failure after that
+    /// can't lose the ID. Returns the new page's ID.
+    func createPage(
+        parent: String, title: String, children: [JSONValue],
+        onCreated: @Sendable (String) async -> Void = { _ in }
+    ) async throws -> String {
         let body: JSONValue = [
             "parent": ["type": "page_id", "page_id": .string(parent)],
             "properties": Self.titleProperties(title),
@@ -65,6 +72,7 @@ struct NotionClient {
             throw Failure.pageNotShared
         }
         guard let id = Self.object(data)?["id"] as? String else { throw Failure.http(200, "Jawaban Notion tidak berisi ID halaman.") }
+        await onCreated(id)
         try await append(Array(children.dropFirst(Self.batchSize)), to: id)
         return id
     }
@@ -74,6 +82,8 @@ struct NotionClient {
     func replaceContent(of page: String, title: String, with children: [JSONValue]) async throws {
         do {
             try await send("PATCH", "/v1/pages/\(page)", body: ["properties": Self.titleProperties(title)])
+            // Sub-pages and databases are the owner's own; only the blocks
+            // this app wrote go.
             for id in try await childIDs(of: page) {
                 do {
                     try await send("DELETE", "/v1/blocks/\(id)", body: nil)
@@ -89,8 +99,12 @@ struct NotionClient {
 
     /// Creates the minutes' page, or rewrites `existing` when there is one.
     /// A stored page that's gone (deleted in Notion) gets a new page under
-    /// `parent`. Returns the page's ID, to store.
-    func publish(existing: String?, parent: String, title: String, children: [JSONValue]) async throws -> String {
+    /// `parent`. `onCreated` hears the ID of a page made here as soon as it
+    /// exists (see `createPage`). Returns the page's ID, to store.
+    func publish(
+        existing: String?, parent: String, title: String, children: [JSONValue],
+        onCreated: @Sendable (String) async -> Void = { _ in }
+    ) async throws -> String {
         if let existing {
             do {
                 try await replaceContent(of: existing, title: title, with: children)
@@ -100,7 +114,7 @@ struct NotionClient {
                 // either throws from there.
             }
         }
-        return try await createPage(parent: parent, title: title, children: children)
+        return try await createPage(parent: parent, title: title, children: children, onCreated: onCreated)
     }
 
     // MARK: Requests
@@ -118,16 +132,21 @@ struct NotionClient {
         }
     }
 
-    /// The IDs of all the block's children, over as many pages as it takes.
+    /// The IDs of the block's children to delete, over as many pages as it takes.
     private func childIDs(of id: String) async throws -> [String] {
         var ids: [String] = []
         var cursor: String?
         repeat {
             var path = "/v1/blocks/\(id)/children?page_size=\(Self.batchSize)"
-            if let cursor { path += "&start_cursor=\(cursor)" }
+            if let cursor {
+                path += "&start_cursor=" + (cursor.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? cursor)
+            }
             let data = try await send("GET", path, body: nil)
             guard let object = Self.object(data) else { break }
-            ids += (object["results"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+            ids += (object["results"] as? [[String: Any]] ?? []).compactMap { block in
+                let kind = block["type"] as? String
+                return kind == "child_page" || kind == "child_database" ? nil : block["id"] as? String
+            }
             cursor = object["has_more"] as? Bool == true ? object["next_cursor"] as? String : nil
         } while cursor != nil
         return ids
@@ -146,7 +165,7 @@ struct NotionClient {
             if status == 429, retries < Self.maxRetries {
                 retries += 1
                 let wait = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
-                try await sleep(wait ?? 1)
+                try await sleep(min(max(wait ?? 1, 0), Self.maxRetryAfter))
                 continue
             }
             throw Failure.http(status, Self.message(in: data))

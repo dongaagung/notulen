@@ -34,7 +34,8 @@ struct MinutesView: View {
     @ViewState private var copied = false
     /// A PDF is being written; another export waits for it.
     @ViewState private var exportsPDF = false
-    /// Sending to Notion: under way, or done with the page's ID.
+    /// Sending to Notion: under way, or done with the page's ID. Both name
+    /// their meeting, so a send never shows on another meeting's page.
     @ViewState private var notion = NotionState.idle
     /// The journal has been read, so an empty `lines` means nothing was said.
     @ViewState private var linesLoaded = false
@@ -42,7 +43,7 @@ struct MinutesView: View {
     @ViewState private var width = CGFloat.infinity
 
     enum NotionState: Equatable {
-        case idle, sending, sent(String)
+        case idle, sending(UUID), sent(UUID, String)
     }
 
     static let notionHelp = "Isi token dan halaman induk Notion di Pengaturan."
@@ -118,7 +119,7 @@ struct MinutesView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if case .sent(let id) = notion {
+            if case .sent(meeting.id, let id) = notion {
                 HStack(spacing: 12) {
                     Label("Terkirim ke Notion", systemImage: "checkmark")
                         .font(.callout.weight(.medium))
@@ -150,6 +151,7 @@ struct MinutesView: View {
         .navigationTitle(meeting.title.isEmpty ? "Tanpa judul" : meeting.title)
         .toolbar { toolbar }
         .task(id: meeting.id) { await loadTranscript() }
+        .onChange(of: meeting.id) { notion = .idle }
         .onChange(of: meeting.title) {
             if !editsTitle { title = meeting.title }
         }
@@ -358,7 +360,7 @@ struct MinutesView: View {
             Button("Ekspor PDF…") { exportPDF() }
                 .disabled(exportsPDF)
             Button("Kirim ke Notion") { sendToNotion() }
-                .disabled(!store.isNotionReady || notion == .sending)
+                .disabled(!store.isNotionReady || notion == .sending(meeting.id))
                 .help(store.isNotionReady ? "" : Self.notionHelp)
         } label: {
             Label("Bagikan", systemImage: "square.and.arrow.up")
@@ -415,24 +417,20 @@ struct MinutesView: View {
     /// stores its ID.
     private func sendToNotion() {
         guard let minutes = shownMinutes, let token = store.notionToken,
-              let parent = store.settings.notionParentPageID, notion != .sending
+              let parent = store.settings.notionParentPageID, notion != .sending(meeting.id)
         else { return }
         let id = meeting.id
         let title = MinutesFormatting.title(minutes, meeting: meeting)
         let children = NotionBlocks.blocks(for: minutes, meeting: meeting)
-        let existing = meeting.notionPageID
-        notion = .sending
+        notion = .sending(id)
         Task {
             do {
-                let page = try await NotionClient(token: token)
-                    .publish(existing: existing, parent: parent, title: title, children: children)
-                if var latest = store.meeting(id), latest.notionPageID != page {
-                    latest.notionPageID = page
-                    store.save(latest)
-                }
-                notion = .sent(page)
+                let page = try await store.publishToNotion(
+                    id, using: NotionClient(token: token), parent: parent, title: title, children: children)
+                // Only if this meeting is still the one shown and waiting.
+                if notion == .sending(id) { notion = .sent(id, page) }
             } catch {
-                notion = .idle
+                if notion == .sending(id) { notion = .idle }
                 store.lastError = "Tidak bisa mengirim ke Notion: \(error.localizedDescription)"
             }
         }

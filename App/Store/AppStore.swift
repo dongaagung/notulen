@@ -142,6 +142,26 @@ final class AppStore {
         }
     }
 
+    /// Sends the meeting's minutes to Notion and stores the page's ID: the
+    /// moment a page is created, so a send that fails afterwards still
+    /// leaves the ID, and the next send rewrites that page instead of making
+    /// a second one. Returns the page's ID.
+    func publishToNotion(
+        _ meetingID: UUID, using client: NotionClient, parent: String, title: String, children: [JSONValue]
+    ) async throws -> String {
+        let page = try await client.publish(
+            existing: meeting(meetingID)?.notionPageID, parent: parent, title: title, children: children,
+            onCreated: { [self] page in await MainActor.run { storeNotionPage(page, for: meetingID) } })
+        storeNotionPage(page, for: meetingID)
+        return page
+    }
+
+    private func storeNotionPage(_ page: String, for meetingID: UUID) {
+        guard var latest = meeting(meetingID), latest.notionPageID != page else { return }
+        latest.notionPageID = page
+        save(latest)
+    }
+
     /// Sending to Notion needs the token and the parent page.
     var isNotionReady: Bool { hasNotionToken && settings.notionParentPageID != nil }
 

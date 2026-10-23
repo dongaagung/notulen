@@ -294,4 +294,73 @@ struct NotionClientTests {
         #expect(id == "fresh")
         #expect(StubURLProtocol.requests(host: host).last?.method == "POST")
     }
+
+    @Test func retryAfterIsCappedAndCursorsAreEncoded() async throws {
+        let count = Counter()
+        StubURLProtocol.handle(host: host) { request in
+            if request.method == "GET" {
+                return request.query.contains("start_cursor=")
+                    ? .init(200, body: #"{"results":[],"has_more":false}"#)
+                    : .init(200, body: #"{"results":[],"has_more":true,"next_cursor":"a b+c/="}"#)
+            }
+            return count.next() == 1 ? .init(429, headers: ["Retry-After": "3600"]) : .init(200, body: "{}")
+        }
+        try await client().replaceContent(of: pageID, title: "T", with: [])
+        #expect(sleeps.values.withLock { $0 } == [60])
+        let gets = StubURLProtocol.requests(host: host).filter { $0.method == "GET" }
+        #expect(gets[1].url.absoluteString.hasSuffix("start_cursor=a%20b%2Bc%2F%3D"))
+    }
+
+    @Test func replaceKeepsSubPagesAndDatabases() async throws {
+        StubURLProtocol.handle(host: host) { request in
+            request.method == "GET"
+                ? .init(200, body: #"{"results":[{"id":"p","type":"paragraph"},{"id":"sub","type":"child_page"},{"id":"db","type":"child_database"},{"id":"q","type":"to_do"}],"has_more":false}"#)
+                : .init(200, body: "{}")
+        }
+        try await client().replaceContent(of: pageID, title: "T", with: [])
+        let deleted = StubURLProtocol.requests(host: host).filter { $0.method == "DELETE" }.map(\.path)
+        #expect(deleted == ["/v1/blocks/p", "/v1/blocks/q"])
+    }
+
+    @Test func createPageReportsItsIDBeforeAppending() async {
+        StubURLProtocol.handle(host: host) { request in
+            request.method == "POST" ? .init(200, body: #"{"id":"made"}"#) : .init(500, body: #"{"message":"boom"}"#)
+        }
+        let ids = Mutex<[String]>([])
+        await #expect(throws: NotionClient.Failure.http(500, "boom")) {
+            _ = try await client().createPage(parent: pageID, title: "T", children: blocks(230)) { id in
+                ids.withLock { $0.append(id) }
+            }
+        }
+        #expect(ids.withLock { $0 } == ["made"])
+    }
+
+    @MainActor
+    @Test func partialSendKeepsThePageIDAndNextSendReplaces() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "NotulenTests-\(UUID().uuidString)")
+        let store = AppStore(files: JSONFileStore(directory: directory), keychainPrefix: "test-\(UUID().uuidString)-")
+        let saved = meeting()
+        store.save(saved)
+        let client = NotionClient(token: "t", session: StubURLProtocol.session) { _ in }
+        let page = "1429989f-e8ac-4eff-bc8f-57f56486db54"
+
+        // The second PATCH (blocks 201 on) fails.
+        let patches = Counter()
+        StubURLProtocol.handle(host: host) { request in
+            if request.method == "POST" { return .init(200, body: #"{"id":"made"}"#) }
+            if request.method == "PATCH", patches.next() == 2 { return .init(500, body: #"{"message":"boom"}"#) }
+            return .init(200, body: #"{"results":[],"has_more":false}"#)
+        }
+        await #expect(throws: NotionClient.Failure.http(500, "boom")) {
+            _ = try await store.publishToNotion(saved.id, using: client, parent: page, title: "T", children: blocks(230))
+        }
+        #expect(store.meeting(saved.id)?.notionPageID == "made")
+
+        StubURLProtocol.handle(host: host) { _ in .init(200, body: #"{"results":[],"has_more":false}"#) }
+        let again = try await store.publishToNotion(saved.id, using: client, parent: page, title: "T", children: blocks(230))
+        #expect(again == "made")
+        let requests = StubURLProtocol.requests(host: host)
+        #expect(!requests.contains { $0.method == "POST" })
+        #expect(requests.first?.path == "/v1/pages/made")
+    }
 }
