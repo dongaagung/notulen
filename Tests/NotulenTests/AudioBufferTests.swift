@@ -68,5 +68,26 @@ import Testing
         buffer.wipe()
         #expect(buffer.sampleCount == 0)
         #expect(buffer.coveredUntil == nil)
+        buffer.beginSegment(atMeetingTime: 0)
+        buffer.append(pcm([16384, 8192]))
+        #expect(buffer.sampleCount == 2)
+        #expect((try? read(buffer, offset: 0, count: 2)) == [0.5, 0.25])
+    }
+
+    @Test func coveredUntilIgnoresEmptyTrailingSegment() {
+        let buffer = MeetingAudioBuffer(maxSamples: 100_000, chunkSamples: 4096)
+        buffer.beginSegment(atMeetingTime: 0)
+        buffer.append(pcm([Int16](repeating: 1, count: 16_000)))
+        buffer.beginSegment(atMeetingTime: 100)
+        #expect(buffer.coveredUntil == 1)
+    }
+
+    @Test func coveredUntilStopsAtCap() {
+        let buffer = MeetingAudioBuffer(maxSamples: 16_000, chunkSamples: 4000)
+        buffer.beginSegment(atMeetingTime: 0)
+        buffer.append(pcm([Int16](repeating: 1, count: 16_000)))
+        buffer.beginSegment(atMeetingTime: 50)
+        buffer.append(pcm([1]))
+        #expect(buffer.coveredUntil == 1)
     }
 }

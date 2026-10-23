@@ -56,7 +56,10 @@ final class MeetingAudioBuffer: @unchecked Sendable {
     /// samples beyond the cap are dropped.
     @discardableResult
     func append(_ buffer: AVAudioPCMBuffer) -> Bool {
-        guard let source = buffer.int16ChannelData?[0] else { return false }
+        guard let source = buffer.int16ChannelData?[0] else {
+            assertionFailure("MeetingAudioBuffer.append expects a mono16kInt16 buffer")
+            return false
+        }
         if segments.isEmpty { beginSegment(atMeetingTime: 0) }
         let incoming = Int(buffer.frameLength)
         let accepted = min(incoming, maxSamples - sampleCount)
@@ -79,7 +82,8 @@ final class MeetingAudioBuffer: @unchecked Sendable {
 
     /// Meeting time where the stored audio ends, or nil when empty.
     var coveredUntil: TimeInterval? {
-        guard sampleCount > 0, let last = segments.last else { return nil }
+        guard sampleCount > 0, let last = segments.last(where: { $0.sampleOffset < sampleCount })
+        else { return nil }
         return last.meetingStart + Double(sampleCount - last.sampleOffset) / Self.sampleRate
     }
 
