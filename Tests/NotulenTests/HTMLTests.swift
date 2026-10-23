@@ -24,8 +24,8 @@ private let minutes = Minutes(
     openQuestions: [Minutes.OpenQuestion(id: "q1", question: "Anggaran?", context: "Kata [[s1]], pemakaian naik.", at: 52)],
     topics: [Minutes.Topic(title: "Status", start: 2, end: 24, points: ["Fitur selesai.", "[[s2]] menguji."])])
 
-private func render(_ minutes: Minutes = minutes, _ meeting: Meeting = meeting()) -> String {
-    MinutesHTML.render(minutes, meeting: meeting, timeZone: zone)
+private func render(_ minutes: Minutes = minutes, _ meeting: Meeting = meeting(), language: String = "id") -> String {
+    MinutesHTML.render(minutes, meeting: meeting, language: language, timeZone: zone)
 }
 
 /// True when every needle appears, each after the one before.
@@ -60,7 +60,7 @@ struct HTMLTests {
         let out = render(minutes, meeting(done: ["a2"]))
         #expect(appearsInOrder([
             "Kamis, 22 Oktober 2026 · 09.00–10.12 · 1 jam 12 menit · Bahasa Indonesia",
-            "<h1>Weekly Sync Tim Produk</h1>",
+            "<h1 dir=\"auto\">Weekly Sync Tim Produk</h1>",
             "Peserta: Saya, Andi, Pembicara 2",
             "Andi melapor kepada Saya.",
             "Rilis diundur.", "00:14",
@@ -73,8 +73,8 @@ struct HTMLTests {
 
     @Test func checkboxesShowWhatIsDone() {
         let out = render(minutes, meeting(done: ["a1"]))
-        #expect(out.contains("☑</span><div class=\"text\"><span class=\"task\">Tugas a1"))
-        #expect(out.contains("☐</span><div class=\"text\"><span class=\"task\">Tugas a2"))
+        #expect(out.contains("☑</span><div class=\"text\" dir=\"auto\"><span class=\"task\">Tugas a1"))
+        #expect(out.contains("☐</span><div class=\"text\" dir=\"auto\"><span class=\"task\">Tugas a2"))
     }
 
     @Test func unnamedOwnersLookUnnamed() {
@@ -88,10 +88,10 @@ struct HTMLTests {
     }
 
     @Test func questionContextShowsUnderTheQuestion() {
-        #expect(render().contains("Anggaran?<span class=\"sub\">Kata Andi, pemakaian naik.</span></div>"))
+        #expect(render().contains("Anggaran?<span class=\"sub\" dir=\"auto\">Kata Andi, pemakaian naik.</span></div>"))
         var odd = minutes
         odd.openQuestions[0].context = "<b>\n[[s2]]"
-        #expect(render(odd).contains("Anggaran?<span class=\"sub\">&lt;b&gt; Pembicara 2</span></div>"))
+        #expect(render(odd).contains("Anggaran?<span class=\"sub\" dir=\"auto\">&lt;b&gt; Pembicara 2</span></div>"))
         for context in [nil, " \n "] as [String?] {
             var bare = minutes
             bare.openQuestions[0].context = context
@@ -111,13 +111,32 @@ struct HTMLTests {
     @Test func emptySectionsSayNone() {
         let out = render(Minutes(titleSuggestion: "", summary: ""), meeting(title: " "))
         #expect(out.components(separatedBy: "<p class=\"none\">Tidak ada.</p>").count == 6)
-        #expect(out.contains("<h1>Tanpa judul</h1>"))
+        #expect(out.contains("<h1 dir=\"auto\">Tanpa judul</h1>"))
     }
 
     @Test func summaryKeepsItsLineBreaks() {
         var long = minutes
         long.summary = "Paragraf satu.\n\nParagraf dua."
-        #expect(render(long).contains("<p class=\"summary\">Paragraf satu.\n\nParagraf dua.</p>"))
+        #expect(render(long).contains("<p class=\"summary\" dir=\"auto\">Paragraf satu.\n\nParagraf dua.</p>"))
+    }
+
+    /// A translation into Arabic or Hebrew reads right to left: each text
+    /// takes its direction from its own words, and the page says its
+    /// language.
+    @Test func textTakesItsDirectionAndThePageItsLanguage() {
+        let out = render()
+        #expect(out.contains("<html lang=\"id\">"))
+        #expect(render(language: "ar").contains("<html lang=\"ar\">"))
+        #expect(render(language: "zh-Hans").contains("<html lang=\"zh-Hans\">"))
+        #expect(render(language: "x\"y").contains("<html lang=\"x&quot;y\">"))
+        #expect(out.contains("<h1 dir=\"auto\">"))
+        #expect(out.contains("<p class=\"summary\" dir=\"auto\">"))
+        #expect(out.contains("<div class=\"text\" dir=\"auto\">Rilis diundur."))
+        #expect(out.contains("<span class=\"sub\" dir=\"auto\"><span class=\"owner\">Andi"))
+        #expect(out.contains("<span class=\"title\" dir=\"auto\">1. Status</span>"))
+        #expect(out.contains("<li dir=\"auto\">Fitur selesai.</li>"))
+        // Without a language the page is the minutes as written.
+        #expect(MinutesHTML.render(minutes, meeting: meeting(), timeZone: zone).contains("<html lang=\"id\">"))
     }
 
     @Test func pageIsA4WithSystemFont() {

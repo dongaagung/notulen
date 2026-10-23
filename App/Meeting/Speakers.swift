@@ -41,9 +41,16 @@ extension Meeting {
     }
 
     /// Counts everything `from` said as `to`. Ignored for itself and for a
-    /// merge that would loop back.
+    /// merge that would loop back. A name the owner gave `from` goes to a
+    /// `to` without one.
     mutating func merge(_ from: SpeakerID, into to: SpeakerID) {
         guard from != to, resolved(to) != from else { return }
+        let target = resolved(to)
+        if target.remoteNumber != nil, !hasName(target),
+           let name = speakers.first(where: { $0.id == from })?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            rename(target, to: name)
+        }
         merges.append(SpeakerMerge(from: from, to: to))
     }
 

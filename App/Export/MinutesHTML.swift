@@ -2,16 +2,21 @@ import Foundation
 
 /// The minutes as one standalone HTML page for the PDF export: the same
 /// sections, order and text as the Markdown, laid out like the app on A4.
-/// All text is escaped; the CSS is inline.
+/// All text is escaped; the CSS is inline. Each text takes its direction
+/// from its own words, so a right-to-left translation reads right.
 enum MinutesHTML {
     static let none = "<p class=\"none\">Tidak ada.</p>"
 
-    static func render(_ minutes: Minutes, meeting: Meeting, timeZone: TimeZone = .current) -> String {
+    /// `language`: the BCP 47 code of the minutes shown, "id" for the
+    /// minutes as written.
+    static func render(
+        _ minutes: Minutes, meeting: Meeting, language: String = "id", timeZone: TimeZone = .current
+    ) -> String {
         func text(_ text: String) -> String { escape(MinutesFormatting.oneLine(text, in: meeting)) }
         func time(_ label: String) -> String { "<span class=\"time\">\(escape(label))</span>" }
         func row(_ mark: String, _ body: String, at seconds: Double, done: Bool = false, box: Bool = false) -> String {
             "<div class=\"row\(done ? " done" : "")\"><span class=\"mark\(box ? " box" : "")\">\(mark)</span>"
-                + "<div class=\"text\">\(body)</div>\(time(MeetingTime.format(seconds)))</div>"
+                + "<div class=\"text\" dir=\"auto\">\(body)</div>\(time(MeetingTime.format(seconds)))</div>"
         }
         func section(_ title: String, _ rows: [String]) -> [String] {
             ["<h2>\(title)</h2>"] + (rows.isEmpty ? [none] : ["<div class=\"card\">"] + rows + ["</div>"])
@@ -20,10 +25,10 @@ enum MinutesHTML {
         let title = escape(MinutesFormatting.title(minutes, meeting: meeting))
         var body = [
             "<p class=\"meta\">\(escape(MinutesFormatting.dateLine(meeting, timeZone: timeZone)))</p>",
-            "<h1>\(title)</h1>",
+            "<h1 dir=\"auto\">\(title)</h1>",
             "<p class=\"people\">Peserta: \(escape(MinutesFormatting.participants(of: meeting).joined(separator: ", ")))</p>",
             "<h2>Ringkasan</h2>",
-            MinutesFormatting.summary(minutes, in: meeting).map { "<p class=\"summary\">\(escape($0))</p>" } ?? none,
+            MinutesFormatting.summary(minutes, in: meeting).map { "<p class=\"summary\" dir=\"auto\">\(escape($0))</p>" } ?? none,
         ]
         body += section("Keputusan", minutes.decisions.map { row("◆", text($0.text), at: $0.at) })
         body += section("Action item", minutes.actionItems.map { item in
@@ -32,11 +37,13 @@ enum MinutesHTML {
             let owner = "<span class=\"owner\(named ? "" : " anon")\">\(escape(MinutesFormatting.owner(item, in: meeting)))</span>"
             let due = MinutesFormatting.due(item, in: meeting).map { " · \(escape($0))" } ?? ""
             return row(
-                done ? "☑" : "☐", "<span class=\"task\">\(text(item.task))</span><span class=\"sub\">\(owner)\(due)</span>",
+                done ? "☑" : "☐",
+                "<span class=\"task\">\(text(item.task))</span><span class=\"sub\" dir=\"auto\">\(owner)\(due)</span>",
                 at: item.at, done: done, box: true)
         })
         body += section("Pertanyaan terbuka", minutes.openQuestions.map { question in
-            let context = MinutesFormatting.context(question, in: meeting).map { "<span class=\"sub\">\(escape($0))</span>" }
+            let context = MinutesFormatting.context(question, in: meeting)
+                .map { "<span class=\"sub\" dir=\"auto\">\(escape($0))</span>" }
             return row("?", text(question.question) + (context ?? ""), at: question.at)
         })
         body.append("<h2>Topik yang dibahas</h2>")
@@ -44,16 +51,16 @@ enum MinutesHTML {
         for (index, topic) in minutes.topics.enumerated() {
             let span = "\(MeetingTime.format(topic.start))–\(MeetingTime.format(topic.end))"
             body.append("<div class=\"topic\">")
-            body.append("<h3><span class=\"title\">\(index + 1). \(text(topic.title))</span>\(time(span))</h3>")
+            body.append("<h3><span class=\"title\" dir=\"auto\">\(index + 1). \(text(topic.title))</span>\(time(span))</h3>")
             if !topic.points.isEmpty {
-                body += ["<ul>"] + topic.points.map { "<li>\(text($0))</li>" } + ["</ul>"]
+                body += ["<ul>"] + topic.points.map { "<li dir=\"auto\">\(text($0))</li>" } + ["</ul>"]
             }
             body.append("</div>")
         }
 
         return """
             <!DOCTYPE html>
-            <html lang="id">
+            <html lang="\(escape(language))">
             <head>
             <meta charset="utf-8">
             <title>\(title)</title>

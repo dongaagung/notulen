@@ -189,22 +189,19 @@ struct ActionItemRow: View {
         var isNamed: Bool
     }
 
-    /// The speaker's name once they have one, else the name the AI heard,
-    /// else "Pembicara N"; "Pemilik tidak disebut" when nobody was named.
+    /// As the exports name them: the speaker's name once they have one,
+    /// else the name the AI heard, else "Pembicara N"; "pemegang tidak
+    /// disebut" when nobody was named.
     static func owner(of item: Minutes.ActionItem, in meeting: Meeting) -> Owner {
-        let heard = item.owner?.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let speaker = item.owner?.speaker {
-            if meeting.hasName(speaker) { return Owner(text: meeting.displayName(for: speaker), isNamed: true) }
-            if !heard.isEmpty { return Owner(text: heard, isNamed: true) }
-            return Owner(text: meeting.displayName(for: speaker), isNamed: false)
-        }
-        if !heard.isEmpty { return Owner(text: heard, isNamed: true) }
-        return Owner(text: "Pemilik tidak disebut", isNamed: false)
+        Owner(
+            text: MinutesFormatting.owner(item, in: meeting),
+            isNamed: MinutesFormatting.ownerIsNamed(item, in: meeting))
     }
 
-    static func due(of item: Minutes.ActionItem) -> String {
-        let due = item.due?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return due.isEmpty ? "tenggat tidak disebut" : due
+    /// The deadline as said; nil when nobody gave one, and then the row
+    /// shows none, as the exports do.
+    static func due(of item: Minutes.ActionItem, in meeting: Meeting) -> String? {
+        MinutesFormatting.due(item, in: meeting)
     }
 
     var body: some View {
@@ -229,7 +226,8 @@ struct ActionItemRow: View {
         let name = owner.isNamed
             ? Text(owner.text).fontWeight(.semibold).foregroundStyle(isDone ? .secondary : .primary)
             : Text(owner.text).italic()
-        return Text("\(name) · \(Self.due(of: item))")
+        guard let due = Self.due(of: item, in: meeting) else { return name }
+        return Text("\(name) · \(due)")
     }
 }
 

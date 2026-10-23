@@ -401,11 +401,34 @@ final class FinisherTests {
             == .init(text: "Pembicara 2", isNamed: false))
         #expect(ActionItemRow.owner(of: item(nil, "Budi"), in: meeting) == .init(text: "Budi", isNamed: true))
         let nobody = Minutes.ActionItem(id: "a", task: "t", owner: nil, due: nil, at: 0)
-        #expect(ActionItemRow.owner(of: nobody, in: meeting) == .init(text: "Pemilik tidak disebut", isNamed: false))
+        // The exports' wording.
+        #expect(ActionItemRow.owner(of: nobody, in: meeting) == .init(text: "pemegang tidak disebut", isNamed: false))
+        #expect(ActionItemRow.owner(of: item(nil, " \n "), in: meeting) == .init(text: "pemegang tidak disebut", isNamed: false))
+        #expect(ActionItemRow.owner(of: item(nil, "[[s1]]"), in: meeting) == .init(text: "Rina", isNamed: true))
         meeting.merges = [SpeakerMerge(from: .remote(2), to: .remote(1))]
         #expect(ActionItemRow.owner(of: item(.remote(2), nil), in: meeting) == .init(text: "Rina", isNamed: true))
-        #expect(ActionItemRow.due(of: nobody) == "tenggat tidak disebut")
-        #expect(ActionItemRow.due(of: .init(id: "a", task: "t", owner: nil, due: "Jumat", at: 0)) == "Jumat")
+        // No deadline said: none shown, as in the exports.
+        #expect(ActionItemRow.due(of: nobody, in: meeting) == nil)
+        #expect(ActionItemRow.due(of: .init(id: "a", task: "t", owner: nil, due: " ", at: 0), in: meeting) == nil)
+        #expect(ActionItemRow.due(of: .init(id: "a", task: "t", owner: nil, due: "Jumat", at: 0), in: meeting) == "Jumat")
+    }
+
+    /// The app and the exports name the owner the same way.
+    @Test func actionItemRowMatchesTheExports() {
+        let meeting = Meeting(
+            title: "", startedAt: startedAt, status: .ready, language: "id-ID", audioSource: .systemWide,
+            speakers: [SpeakerInfo(id: .remote(1), name: "Rina"), SpeakerInfo(id: .remote(2), name: nil)])
+        let owners: [Minutes.ActionItem.Owner?] = [
+            nil, .init(speaker: .me, name: nil), .init(speaker: .remote(1), name: "Andi"),
+            .init(speaker: .remote(2), name: nil), .init(speaker: nil, name: "Budi"),
+        ]
+        for owner in owners {
+            let item = Minutes.ActionItem(id: "a", task: "t", owner: owner, due: "Jumat", at: 0)
+            let row = ActionItemRow.owner(of: item, in: meeting)
+            #expect(row.text == MinutesFormatting.owner(item, in: meeting))
+            #expect(row.isNamed == MinutesFormatting.ownerIsNamed(item, in: meeting))
+            #expect(ActionItemRow.due(of: item, in: meeting) == MinutesFormatting.due(item, in: meeting))
+        }
     }
 
     @Test func participantsAreMeThenSpeakersThenOthers() {

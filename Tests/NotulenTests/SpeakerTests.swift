@@ -43,6 +43,36 @@ struct SpeakerTests {
         #expect(m.speaker(of: l) == .remote(2))
     }
 
+    /// A name typed for a speaker survives merging it into one without a
+    /// name; a target with a name keeps its own.
+    @Test func mergeCarriesTheNameToAnUnnamedTarget() {
+        var m = meeting(speakers: [SpeakerInfo(id: .remote(1), name: nil), SpeakerInfo(id: .remote(2), name: "Rina")])
+        m.merge(.remote(2), into: .remote(1))
+        #expect(m.displayName(for: .remote(1)) == "Rina")
+        #expect(m.displayName(for: .remote(2)) == "Rina")
+        #expect(m.hasName(.remote(1)))
+
+        var named = meeting(speakers: [SpeakerInfo(id: .remote(1), name: "Andi"), SpeakerInfo(id: .remote(2), name: "Rina")])
+        named.merge(.remote(2), into: .remote(1))
+        #expect(named.displayName(for: .remote(2)) == "Andi")
+
+        // Into a speaker merged on: the name goes to the end of the chain.
+        var chain = meeting(
+            speakers: [SpeakerInfo(id: .remote(3), name: "Budi")], merges: [SpeakerMerge(from: .remote(2), to: .remote(1))])
+        chain.merge(.remote(3), into: .remote(2))
+        #expect(chain.displayName(for: .remote(1)) == "Budi")
+
+        // No name, nothing to carry; a merge that would loop changes nothing.
+        var unnamed = meeting(speakers: [SpeakerInfo(id: .remote(1), name: nil), SpeakerInfo(id: .remote(2), name: " ")])
+        unnamed.merge(.remote(2), into: .remote(1))
+        #expect(unnamed.displayName(for: .remote(1)) == "Pembicara 1")
+        var loop = meeting(
+            speakers: [SpeakerInfo(id: .remote(1), name: "Andi")], merges: [SpeakerMerge(from: .remote(2), to: .remote(1))])
+        let before = loop
+        loop.merge(.remote(1), into: .remote(2))
+        #expect(loop == before)
+    }
+
     @Test func mergeCycleTerminates() {
         let m = meeting(merges: [
             SpeakerMerge(from: .remote(1), to: .remote(2)), SpeakerMerge(from: .remote(2), to: .remote(1)),

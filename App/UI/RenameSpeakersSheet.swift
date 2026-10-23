@@ -2,13 +2,13 @@ import SwiftUI
 
 /// Names the remote speakers and merges two that are the same person. Each
 /// speaker shows a few of their longest lines with the time, and the AI's
-/// guess at their name, if it has one. Names are saved with Selesai; a merge
-/// or "Pakai" applies at once. Everything is applied to the meeting as the
-/// store has it now, so changes made meanwhile aren't overwritten.
+/// guess at their name, if it has one. Names are saved with Selesai, and
+/// when the sheet goes any other way (Esc); a merge or "Pakai" applies at
+/// once. Everything is applied to the meeting as the store has it now, so
+/// changes made meanwhile aren't overwritten.
 struct RenameSpeakersSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.textScale) private var scale
     let meetingID: UUID
     let lines: [TranscriptLine]
     /// Names as typed, by speaker.
@@ -49,6 +49,8 @@ struct RenameSpeakersSheet: View {
                     drafts[id] = meeting.hasName(id) ? meeting.displayName(for: id) : ""
                 }
             }
+            // Saves nothing when nothing changed, as after Selesai.
+            .onDisappear { commit() }
         }
     }
 
@@ -143,5 +145,11 @@ struct RenameSpeakersSheet: View {
         latest.merge(from, into: target)
         store.save(latest)
         drafts[from] = nil
+        // The target may have taken `from`'s name; an empty draft would
+        // clear it on the next save.
+        let merged = latest.resolved(target)
+        if latest.hasName(merged), drafts[merged]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+            drafts[merged] = latest.displayName(for: merged)
+        }
     }
 }

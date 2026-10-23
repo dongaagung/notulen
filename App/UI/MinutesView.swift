@@ -450,7 +450,7 @@ struct MinutesView: View {
     /// Asks where to save, then writes the PDF there.
     private func exportPDF() {
         guard let minutes = shownMinutes else { return }
-        let html = MinutesHTML.render(minutes, meeting: meeting)
+        let html = MinutesHTML.render(minutes, meeting: meeting, language: shownLanguage)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.canCreateDirectories = true

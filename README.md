@@ -58,7 +58,7 @@ make icon       # redraw App/Support/AppIcon.icns
 ## First run
 
 1. Open Settings (⌘,), choose an AI provider and paste its API key, which is
-   saved in your Keychain.
+   saved in your Keychain. Ollama runs on your Mac and needs no API key.
 2. Pick the default language for meetings.
 3. Allow microphone, system audio recording and speech recognition when macOS
    asks.
@@ -86,7 +86,8 @@ They live in [prompts/](prompts/) as Markdown templates with `{{variables}}`.
 2. Share the parent page with the integration: page menu, Connections, add it.
 3. In Settings, Notion tab, paste the token and the parent page's URL.
 
-Each export creates a sub-page of that page.
+The first send creates a sub-page of that page; sending the same meeting
+again updates that sub-page instead of making a new one.
 
 ## Privacy
 
