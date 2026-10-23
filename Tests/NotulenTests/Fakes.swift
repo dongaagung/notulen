@@ -13,6 +13,9 @@ final class FakeCapture: MicCapturing {
     let channels: AVAudioChannelCount
     /// Thrown by `start()`, to fake a channel that can't start.
     var startError: (any Error)?
+    /// Thrown by `resume()`, to fake a mic that can't come back on.
+    var resumeError: (any Error)?
+    var onDeviceChange: (@MainActor (String) -> Void)?
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private var chunks: [AudioChunk]
@@ -51,11 +54,40 @@ final class FakeCapture: MicCapturing {
 
     func pause() { pauseCount += 1 }
 
-    func resume() throws { resumeCount += 1 }
+    func resume() throws {
+        if let resumeError { throw resumeError }
+        resumeCount += 1
+    }
+
+    /// Reports a move to the input device `name`, as the real mic does
+    /// after restarting on a new headset.
+    func changeDevice(to name: String) {
+        onDeviceChange?(name)
+    }
 
     /// Forwards `chunk`, or 0.1 s of audible sound in this capture's layout.
     func send(_ chunk: AudioChunk? = nil) {
         continuation?.yield(chunk ?? .audible(channels: channels))
+    }
+}
+
+/// Stands in for `OutputRouteMonitor`: the test says where the meeting's
+/// sound comes out.
+@MainActor
+final class FakeOutputRoute: OutputRouteMonitoring {
+    var onChange: (@MainActor () -> Void)?
+    var isBuiltInSpeaker = false
+    private(set) var isMonitoring = false
+
+    func start() { isMonitoring = true }
+
+    func stop() { isMonitoring = false }
+
+    /// Moves the sound to or from the Mac's speakers, as plugging headphones
+    /// in or out does, and reports it while monitoring.
+    func change(toBuiltInSpeaker builtIn: Bool) {
+        isBuiltInSpeaker = builtIn
+        if isMonitoring { onChange?() }
     }
 }
 

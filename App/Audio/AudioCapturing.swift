@@ -13,6 +13,8 @@ protocol MicCapturing: AudioCapturing {
     /// Asks for mic access; the system prompts only the first time. False
     /// when the owner denied it.
     static func requestPermission() async -> Bool
+    /// Called with the input device's name after the mic moved to another device.
+    var onDeviceChange: (@MainActor (String) -> Void)? { get set }
     /// Lets go of the mic, so the menu bar's mic indicator goes away. The
     /// stream stays open.
     func pause()
@@ -20,12 +22,13 @@ protocol MicCapturing: AudioCapturing {
     func resume() throws
 }
 
-/// The two capture channels of one meeting.
+/// The two capture channels of one meeting, and where its sound comes out.
 struct CaptureDevices {
     var meeting: any AudioCapturing
     var mic: any MicCapturing
+    var output: any OutputRouteMonitoring
 
     @MainActor static func live(_ source: MeetingAudioSource) -> CaptureDevices {
-        CaptureDevices(meeting: ProcessTapCapture(source: source), mic: MicCapture())
+        CaptureDevices(meeting: ProcessTapCapture(source: source), mic: MicCapture(), output: OutputRouteMonitor())
     }
 }

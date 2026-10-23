@@ -24,7 +24,7 @@ final class RecoveryTests {
         _ speech: FakeSpeech = FakeSpeech(),
         audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
     ) -> MeetingSession {
-        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture)
+        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let now = startedAt.addingTimeInterval(300)
         return MeetingSession(
             store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { now },

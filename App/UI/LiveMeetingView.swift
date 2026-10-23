@@ -1,12 +1,17 @@
 import SwiftUI
 
-/// The meeting being recorded: title, timer and Selesai in the toolbar, the
-/// live transcript below. Asks what to do after a long sleep, and offers to
-/// finish once the meeting looks over.
+/// The meeting being recorded: title, timer, the mic button and Selesai in
+/// the toolbar, the live transcript below. Asks what to do after a long
+/// sleep, and offers to finish once the meeting looks over.
 struct LiveMeetingView: View {
     @Environment(MeetingSession.self) private var session
 
     static let finishOffer = "Meeting sepertinya sudah selesai. Selesaikan rekaman?"
+
+    /// ⇧⌘M is the app menu's Matikan Mic / Nyalakan Mic.
+    static func micToggleHelp(micOn: Bool) -> String {
+        micOn ? "Matikan mic (⇧⌘M)" : "Nyalakan mic (⇧⌘M)"
+    }
 
     /// Asked when the Mac woke after sleeping longer than `WakePolicy.resumeLimit`.
     static func wakeQuestion(sleptFor duration: TimeInterval, title: String) -> String {
@@ -58,6 +63,7 @@ struct LiveMeetingView: View {
                         .help("Batalkan meeting ini")
                 case .recording:
                     timer
+                    micToggle
                     Button("Selesai") {
                         Task { _ = await session.stop() }
                     }
@@ -92,8 +98,23 @@ struct LiveMeetingView: View {
         switch notice {
         case .silent: "speaker.slash"
         case .resumedAfterSleep: "moon.zzz"
+        case .micChanged: "mic"
+        case .speakerOutput: "speaker.wave.2"
         case .error: "exclamationmark.triangle"
         }
+    }
+
+    /// Off keeps the owner's side talk out of the transcript; the meeting
+    /// audio records on.
+    private var micToggle: some View {
+        Button {
+            session.setMicEnabled(!session.isMicOn)
+        } label: {
+            Label(
+                session.isMicOn ? "Matikan Mic" : "Nyalakan Mic",
+                systemImage: session.isMicOn ? "mic" : "mic.slash")
+        }
+        .help(Self.micToggleHelp(micOn: session.isMicOn))
     }
 
     /// Red dot and recording time.

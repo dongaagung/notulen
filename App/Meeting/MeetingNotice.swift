@@ -9,6 +9,11 @@ enum MeetingNotice: Equatable, Identifiable {
     case error(String)
     /// Recording went on by itself after the Mac slept this long.
     case resumedAfterSleep(TimeInterval)
+    /// The mic moved to the input device with this name.
+    case micChanged(String)
+    /// The meeting plays through the Mac's own speakers, so the mic hears
+    /// the other participants too.
+    case speakerOutput
 
     /// The meeting audio kept for speaker separation reached its 4-hour cap.
     static let speakerAudioFull = MeetingNotice.error(
@@ -21,6 +26,8 @@ enum MeetingNotice: Equatable, Identifiable {
         case .silent: "silent"
         case .error(let message): "error:\(message)"
         case .resumedAfterSleep(let duration): "resumedAfterSleep:\(duration)"
+        case .micChanged(let name): "micChanged:\(name)"
+        case .speakerOutput: "speakerOutput"
         }
     }
 
@@ -35,6 +42,10 @@ enum MeetingNotice: Equatable, Identifiable {
             message
         case .resumedAfterSleep(let duration):
             "Rekaman dilanjutkan setelah Mac tidur \(MeetingTime.duration(duration))."
+        case .micChanged(let name):
+            "Mic berganti ke \(name)."
+        case .speakerOutput:
+            "Suara meeting keluar lewat speaker Mac. Suara peserta lain bisa masuk ke mic dan terlabel “Saya”. Pakai headset."
         }
     }
 }

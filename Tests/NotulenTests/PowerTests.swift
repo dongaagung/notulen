@@ -40,7 +40,7 @@ final class PowerTests {
         audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() },
         power: PowerGuard? = nil
     ) -> MeetingSession {
-        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture)
+        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let clock = clock
         return MeetingSession(
             store: store,

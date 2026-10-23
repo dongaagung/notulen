@@ -23,6 +23,10 @@ struct NotulenApp: App {
                 Button("Meeting Baru") { showsNewMeeting = true }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            // A menu shortcut, so it works only while Notulen is active.
+            CommandGroup(after: .newItem) {
+                MicCommand(session: session)
+            }
             CommandGroup(after: .toolbar) {
                 Button("Perbesar Teks") {
                     store.settings.textScale = TextScale.bigger(than: store.settings.textScale)
@@ -39,6 +43,20 @@ struct NotulenApp: App {
                 Divider()
             }
         }
+    }
+}
+
+/// Matikan Mic / Nyalakan Mic (⇧⌘M), while a meeting records. A view of its
+/// own, so the title and state follow the session.
+private struct MicCommand: View {
+    let session: MeetingSession
+
+    var body: some View {
+        Button(session.isMicOn ? "Matikan Mic" : "Nyalakan Mic") {
+            session.setMicEnabled(!session.isMicOn)
+        }
+        .keyboardShortcut("m", modifiers: [.command, .shift])
+        .disabled(session.phase != .recording)
     }
 }
 

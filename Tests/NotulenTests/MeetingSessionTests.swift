@@ -26,7 +26,7 @@ final class MeetingSessionTests {
         _ speech: FakeSpeech = FakeSpeech(),
         audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
     ) -> MeetingSession {
-        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture)
+        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let clock = Date(timeIntervalSince1970: 1_800_000_000)
         return MeetingSession(
             store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { clock },

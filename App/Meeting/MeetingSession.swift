@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Foundation
 import Observation
+import Synchronization
 
 /// Records one meeting at a time: captures the meeting audio and the mic,
 /// transcribes both on device and journals every final line. The meeting
@@ -50,6 +51,8 @@ final class MeetingSession {
     private(set) var wakeQuestion: TimeInterval?
     /// The meeting looks over: offer to finish it. Recording goes on.
     private(set) var offersFinish = false
+    /// When the owner had the mic off. The meeting audio records on meanwhile.
+    private var micOff = MicOffTracker()
 
     /// Recording time so far; 0 until capture starts.
     var elapsed: TimeInterval {
@@ -74,8 +77,10 @@ final class MeetingSession {
     private var journal: TranscriptJournal?
     /// The meeting channel as 16 kHz mono, for speaker separation.
     private var meetingAudio = MeetingAudioBuffer()
-    /// Meeting time at which each channel's current audio stream started.
-    /// Recognizer spans count from there.
+    /// Meeting time at which each channel's current speech stream started.
+    /// Recognizer spans count from there; each listener keeps its own, as
+    /// the mic's last lines from before it went off can come in after it's
+    /// back on.
     private var offsets: [Channel: TimeInterval] = [:]
     private var startTask: Task<Void, Never>?
     private var listeners: [Task<Void, Never>] = []
@@ -83,6 +88,13 @@ final class MeetingSession {
     /// is also the only writer of `meetingAudio`.
     private var relays: [Task<Void, Never>] = []
     private var monitorTask: Task<Void, Never>?
+    /// The recognizer for the mic while it may record (it may be off);
+    /// turning it on starts a new speech stream with it.
+    private var micSpeech: (any SttProvider)?
+    /// The mic's audio on its way to speech, while its capture runs.
+    private var micFeed: MicSpeechFeed?
+    /// Why the mic couldn't come back on, until it does.
+    private var micOnFailure: MeetingNotice?
     private var capturesMeeting = false
     private var heardMeeting = false
     /// Tells when the meeting looks over, for the offer to finish. Made
@@ -200,6 +212,8 @@ final class MeetingSession {
         self.configuration = configuration
         notices = []
         offsets = [:]
+        micOff = MicOffTracker(spans: meeting.micOff)
+        micOnFailure = nil
         meetingAudio = makeAudioBuffer()
         capturesMeeting = false
         heardMeeting = false
@@ -258,6 +272,7 @@ final class MeetingSession {
             failStart(notices.map(\.message).joined(separator: "\n"), resumedAfter: gap)
             return
         }
+        watchOutputRoute(devices.output)
         phase = .recording
         power.begin()
         startMonitoring()
@@ -294,6 +309,7 @@ final class MeetingSession {
         if status != .interrupted, let startedAt = meeting?.startedAt {
             meeting?.endedAt = sleptAt.map { startedAt.addingTimeInterval($0) } ?? now()
         }
+        closeMicOff(at: sleptAt ?? meetingTime)
         resetSleepAndOffers()
         if let meeting { store.save(meeting) }
         journal?.close()
@@ -340,6 +356,8 @@ final class MeetingSession {
         resetSleepAndOffers()
         if let gap {
             if let index = meeting?.gaps.lastIndex(of: gap) { meeting?.gaps.remove(at: index) }
+            // Recording stopped where the gap starts; so did a mic left off.
+            closeMicOff(at: gap.span.start)
             meeting?.status = .interrupted
             store.lastError = "Rekaman tidak bisa dilanjutkan: \(message)"
         } else {
@@ -368,7 +386,10 @@ final class MeetingSession {
     private func stopCapture() {
         devices?.meeting.stop()
         devices?.mic.stop()
+        devices?.output.stop()
         devices = nil
+        micSpeech = nil
+        micFeed = nil
     }
 
     // MARK: Pipeline
@@ -376,12 +397,11 @@ final class MeetingSession {
     /// Starts both channels. A channel that can't start is reported, and the
     /// other records on its own.
     private func startCapture(_ devices: CaptureDevices, micAllowed: Bool, speech: any SttProvider) {
-        reportFailures(of: devices)
+        reportDeviceChanges(of: devices)
         capturesMeeting = false
         do {
             let stream = try devices.meeting.start()
             let offset = meetingTime
-            offsets[.meeting] = offset
             capturesMeeting = true
             // Quiet counts from when the meeting audio started, also after a
             // wake; what was offered or declined carries over.
@@ -391,7 +411,7 @@ final class MeetingSession {
                 endDetector?.restartQuietClock(at: offset)
             }
             meetingAudio.beginSegment(atMeetingTime: offset)
-            listen(to: tee(stream, into: meetingAudio), channel: .meeting, with: speech)
+            listen(to: tee(stream, into: meetingAudio), channel: .meeting, from: offset, with: speech)
         } catch {
             post(.error(error.localizedDescription))
         }
@@ -399,27 +419,44 @@ final class MeetingSession {
             post(.error(MicCapture.Failure.permissionDenied.localizedDescription))
             return
         }
+        micSpeech = speech
+        // Turned off before a sleep or while capture restarted: the mic stays
+        // closed until the owner turns it on.
+        guard isMicOn else { return }
         do {
-            let stream = try devices.mic.start()
-            offsets[.mic] = meetingTime
-            listen(to: relay(stream), channel: .mic, with: speech)
+            try startMic()
         } catch {
             post(.error(error.localizedDescription))
         }
     }
 
+    /// Opens the mic and feeds it to a new speech stream counting from now.
+    private func startMic() throws {
+        guard let devices, let micSpeech else { return }
+        let capture = try devices.mic.start()
+        let feed = MicSpeechFeed()
+        // Before the relay runs, so its first chunks have a stream to go to.
+        let audio = feed.next()
+        relay(capture, into: feed)
+        micFeed = feed
+        listen(to: audio, channel: .mic, from: meetingTime, with: micSpeech)
+    }
+
     /// A device that can't be restarted mid-meeting stops its channel only.
-    private func reportFailures(of devices: CaptureDevices) {
+    /// The owner hears when the mic or the meeting's output moved.
+    private func reportDeviceChanges(of devices: CaptureDevices) {
         if let tap = devices.meeting as? ProcessTapCapture {
             tap.onReattachFailure = { [weak self] error in
                 self?.post(.error("Audio meeting berhenti terekam: \(error.localizedDescription)"))
             }
+            tap.onOutputChanged = { [weak self] in self?.checkOutputRoute() }
         }
         if let mic = devices.mic as? MicCapture {
             mic.onRestartFailure = { [weak self] error in
                 self?.post(.error("Mic berhenti merekam: \(error.localizedDescription)"))
             }
         }
+        devices.mic.onDeviceChange = { [weak self] name in self?.micDeviceChanged(to: name) }
     }
 
     // The recognizer reads nothing for a few seconds while its analyzer
@@ -431,14 +468,13 @@ final class MeetingSession {
     // a limit: about 384 KB per second of lag for 48 kHz stereo, and nothing
     // once speech has stopped reading (its stream is gone then).
 
-    /// Passes the mic audio on to speech without dropping any.
-    private func relay(_ audio: AsyncStream<AudioChunk>) -> AsyncStream<AudioChunk> {
-        let (stream, continuation) = AsyncStream.makeStream(of: AudioChunk.self)
+    /// Passes the mic audio on to speech without dropping any, except while
+    /// the mic is off.
+    private func relay(_ audio: AsyncStream<AudioChunk>, into feed: MicSpeechFeed) {
         relays.append(Task.detached {
-            for await chunk in audio { continuation.yield(chunk) }
-            continuation.finish()
+            for await chunk in audio { feed.yield(chunk) }
+            feed.end()
         })
-        return stream
     }
 
     /// Passes the meeting audio on to speech without dropping any, and keeps
@@ -478,11 +514,15 @@ final class MeetingSession {
         return stream
     }
 
-    private func listen(to audio: AsyncStream<AudioChunk>, channel: Channel, with speech: any SttProvider) {
+    /// `offset`: meeting time at which `audio` starts.
+    private func listen(
+        to audio: AsyncStream<AudioChunk>, channel: Channel, from offset: TimeInterval, with speech: any SttProvider
+    ) {
+        offsets[channel] = offset
         listeners.append(Task { [weak self] in
             do {
                 for try await update in speech.transcribe(audio) {
-                    self?.handle(update, from: channel)
+                    self?.handle(update, from: channel, offset: offset)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -504,11 +544,11 @@ final class MeetingSession {
     }
 
     /// Adds the update to the transcript and journals the line it finalizes.
-    /// A mic line that repeats what the meeting just said is the speakers'
-    /// echo and is dropped.
-    private func handle(_ update: TranscriptUpdate, from channel: Channel) {
+    /// `offset`: meeting time at which its speech stream started. A mic line
+    /// that repeats what the meeting just said is the speakers' echo and is
+    /// dropped.
+    private func handle(_ update: TranscriptUpdate, from channel: Channel, offset: TimeInterval) {
         let time = meetingTime
-        let offset = offsets[channel] ?? 0
         if channel == .mic, update.isFinal {
             let start = update.span.map { offset + $0.start } ?? time
             if EchoFilter.isLikelyEcho(update.text, at: start, recent: transcript.lines) {
@@ -668,6 +708,32 @@ final class MeetingSession {
         endDetector?.heardSound(at: meetingTime)
     }
 
+    // MARK: Devices
+
+    /// Only the latest move is worth showing.
+    private func micDeviceChanged(to name: String) {
+        notices.removeAll { if case .micChanged = $0 { true } else { false } }
+        post(.micChanged(name))
+    }
+
+    /// Checks the route now and whenever it changes, until capture stops.
+    private func watchOutputRoute(_ route: any OutputRouteMonitoring) {
+        route.onChange = { [weak self] in self?.checkOutputRoute() }
+        route.start()
+        checkOutputRoute()
+    }
+
+    /// Shows `.speakerOutput` while the meeting plays through the Mac's
+    /// speakers. While capture is stopped the last answer stands.
+    private func checkOutputRoute() {
+        guard let route = devices?.output else { return }
+        if route.isBuiltInSpeaker {
+            post(.speakerOutput)
+        } else {
+            notices.removeAll { $0 == .speakerOutput }
+        }
+    }
+
     private func post(_ notice: MeetingNotice) {
         guard !notices.contains(notice) else { return }
         notices.append(notice)
@@ -677,5 +743,103 @@ final class MeetingSession {
     private var meetingTime: TimeInterval {
         guard let meeting else { return 0 }
         return now().timeIntervalSince(meeting.startedAt)
+    }
+}
+
+// MARK: Mic
+
+extension MeetingSession {
+    /// False while the owner has the mic off.
+    var isMicOn: Bool { !micOff.isOff }
+
+    /// Turns the owner's mic off or on while recording; does nothing
+    /// otherwise. The meeting audio records on either way. Every change is
+    /// saved at once, so a crash keeps when the mic went off. A mic that
+    /// can't come back on stays off, and the owner hears why.
+    func setMicEnabled(_ enabled: Bool) {
+        guard phase == .recording, enabled != isMicOn else { return }
+        let time = meetingTime
+        if enabled {
+            guard turnMicOn() else { return }
+            micOff.turnOn(at: time)
+        } else {
+            turnMicOff()
+            micOff.turnOff(at: time)
+        }
+        meeting?.micOff = micOff.spans(through: time)
+        if let meeting { store.save(meeting) }
+    }
+
+    /// Lets go of the mic and ends its speech stream, so the recognizer
+    /// finalizes what was said up to now. Capture that is stopped (the Mac
+    /// slept) or not started yet just stays closed.
+    private func turnMicOff() {
+        guard let micFeed else { return }
+        devices?.mic.pause()
+        micFeed.end()
+    }
+
+    /// Takes the mic again with a new speech stream counting from now: none
+    /// of the mic's audio flowed while it was off, so the old stream's times
+    /// would lag the meeting by that long. A mic that was never opened (it
+    /// was off when capture started) opens now. False if it can't.
+    private func turnMicOn() -> Bool {
+        if let micOnFailure { notices.removeAll { $0 == micOnFailure } }
+        micOnFailure = nil
+        do {
+            if let micFeed, let micSpeech, let mic = devices?.mic {
+                let audio = micFeed.next()
+                do {
+                    try mic.resume()
+                } catch {
+                    micFeed.end()
+                    throw error
+                }
+                listen(to: audio, channel: .mic, from: meetingTime, with: micSpeech)
+            } else {
+                try startMic()
+            }
+        } catch {
+            let notice = MeetingNotice.error("Mic tidak bisa dinyalakan: \(error.localizedDescription)")
+            micOnFailure = notice
+            post(notice)
+            return false
+        }
+        return true
+    }
+
+    /// Ends a mic-off period still going on, as the recording stops at `time`.
+    private func closeMicOff(at time: TimeInterval) {
+        micOff.close(at: time)
+        meeting?.micOff = micOff.spans
+    }
+}
+
+/// Hands the mic's audio to one speech stream at a time. Turning the mic off
+/// ends the current stream; turning it on starts the next, whose times count
+/// from then. Audio that comes between two streams is dropped: the mic is off.
+private final class MicSpeechFeed: Sendable {
+    private let current = Mutex<AsyncStream<AudioChunk>.Continuation?>(nil)
+
+    /// Ends the current stream and starts the next. Unbounded, like the
+    /// relays: nothing is dropped while the recognizer starts.
+    func next() -> AsyncStream<AudioChunk> {
+        let (stream, continuation) = AsyncStream.makeStream(of: AudioChunk.self)
+        current.withLock {
+            $0?.finish()
+            $0 = continuation
+        }
+        return stream
+    }
+
+    func yield(_ chunk: AudioChunk) {
+        current.withLock { _ = $0?.yield(chunk) }
+    }
+
+    func end() {
+        current.withLock {
+            $0?.finish()
+            $0 = nil
+        }
     }
 }
