@@ -47,6 +47,10 @@ struct SpeechAnalyzerProvider: SttProvider {
         _ = try await Engine.make(locale: locale, progress: progress)
     }
 
+    func prepare(progress: (@Sendable (Double) -> Void)?) async throws {
+        try await Self.prepare(locale: locale, progress: progress)
+    }
+
     func transcribe(_ audio: AsyncStream<AudioChunk>) -> AsyncThrowingStream<TranscriptUpdate, any Error> {
         AsyncThrowingStream { output in
             let task = Task {

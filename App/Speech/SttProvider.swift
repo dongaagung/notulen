@@ -13,5 +13,8 @@ struct TranscriptUpdate: Equatable, Sendable {
 /// Speech-to-text engine. Each call transcribes one audio stream until the
 /// stream ends, then finishes its own output.
 protocol SttProvider: Sendable {
+    /// Gets ready to transcribe, such as downloading the on-device model,
+    /// reporting progress from 0 to 1 while that takes a while.
+    func prepare(progress: (@Sendable (Double) -> Void)?) async throws
     func transcribe(_ audio: AsyncStream<AudioChunk>) -> AsyncThrowingStream<TranscriptUpdate, any Error>
 }

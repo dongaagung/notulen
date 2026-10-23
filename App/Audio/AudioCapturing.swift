@@ -10,6 +10,9 @@ protocol AudioCapturing: AnyObject {
 /// The mic can be turned off mid-meeting without ending its stream.
 @MainActor
 protocol MicCapturing: AudioCapturing {
+    /// Asks for mic access; the system prompts only the first time. False
+    /// when the owner denied it.
+    static func requestPermission() async -> Bool
     /// Lets go of the mic, so the menu bar's mic indicator goes away. The
     /// stream stays open.
     func pause()
