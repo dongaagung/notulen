@@ -112,6 +112,10 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
     /// The running notes per topic from the live view; the minutes replace them.
     var liveNotes: LiveNotes?
     var liveNotesUpdatedAt: Date?
+    /// The finished minutes, in Indonesian.
+    var minutes: Minutes?
+    /// The minutes in other languages, by BCP 47 code.
+    var translations: [String: Minutes] = [:]
 }
 
 extension Meeting {
@@ -135,5 +139,7 @@ extension Meeting {
         failure = try container.decodeIfPresent(String.self, forKey: .failure)
         liveNotes = try container.decodeIfPresent(LiveNotes.self, forKey: .liveNotes)
         liveNotesUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .liveNotesUpdatedAt)
+        minutes = try container.decodeIfPresent(Minutes.self, forKey: .minutes)
+        translations = try container.decodeIfPresent([String: Minutes].self, forKey: .translations) ?? [:]
     }
 }

@@ -1,0 +1,23 @@
+{
+  "title_suggestion": "Weekly Sync Tim Produk",
+  "summary": "Tim membahas kemajuan rilis versi 2.4 dan kendala pada integrasi pembayaran. Disepakati rilis ditunda satu minggu agar pengujian selesai. Beberapa tugas dibagikan, dan satu pertanyaan tentang anggaran server masih terbuka.",
+  "decisions": [
+    { "id": "d1", "text": "Rilis versi 2.4 diundur satu minggu sampai pengujian pembayaran selesai.", "at": 312.5 },
+    { "id": "d2", "text": "Standup harian dipindah ke pukul 09.30.", "at": 1480 }
+  ],
+  "action_items": [
+    { "id": "a1", "task": "Menyelesaikan pengujian integrasi pembayaran", "owner": { "speaker": "s2", "name": "Andi" }, "due": "Jumat depan", "at": 340 },
+    { "id": "a2", "task": "Memperbarui catatan rilis untuk pelanggan", "owner": { "speaker": "me", "name": null }, "due": null, "at": 902 },
+    { "id": "a3", "task": "Mengecek tagihan server bulan lalu", "owner": null, "due": null, "at": 1210 }
+  ],
+  "open_questions": [
+    { "id": "q1", "question": "Apakah anggaran server bulan depan perlu dinaikkan?", "context": "Pemakaian naik 30 persen sejak kampanye terakhir.", "at": 1200 }
+  ],
+  "topics": [
+    { "title": "Status rilis 2.4", "start": 120, "end": 600, "points": ["Fitur utama sudah selesai.", "Pengujian pembayaran belum tuntas."] },
+    { "title": "Biaya server", "start": 1100, "end": 1500, "points": ["Pemakaian naik 30 persen."] }
+  ],
+  "speaker_name_hints": [
+    { "speaker": "s2", "name": "Andi", "evidence": "Dipanggil \"makasih, Andi\" pukul 00:16" }
+  ]
+}
