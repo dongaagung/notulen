@@ -33,6 +33,12 @@ struct AppSettings: Codable, Equatable, Sendable {
 }
 
 extension AppSettings {
+    /// The provider's address and models, with its default address filled in
+    /// before the user changes it.
+    func models(for provider: AIProvider) -> ProviderModels {
+        providerModels[provider] ?? ProviderModels(baseURL: provider.defaultBaseURL)
+    }
+
     /// Fields missing from an older settings.json keep their defaults.
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)

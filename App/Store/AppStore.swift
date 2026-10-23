@@ -13,6 +13,9 @@ final class AppStore {
     private(set) var meetings: [Meeting] = []
     /// Last persistence error, shown in the UI.
     var lastError: String?
+    /// Providers with a key in the Keychain, so views update when one is
+    /// saved or removed without reading the Keychain on every redraw.
+    private(set) var providersWithKeys: Set<AIProvider> = []
 
     private let files: JSONFileStore?
     /// Prepended to Keychain account names; tests use their own.
@@ -24,6 +27,7 @@ final class AppStore {
     init(files: JSONFileStore? = try? .applicationSupport(), keychainPrefix: String = "") {
         self.files = files
         self.keychainPrefix = keychainPrefix
+        providersWithKeys = Set(AIProvider.allCases.filter { $0.acceptsAPIKey && apiKey(for: $0) != nil })
         guard let files else {
             lastError = "Tidak bisa membuka Application Support; perubahan tidak akan tersimpan."
             return
@@ -75,6 +79,71 @@ final class AppStore {
     func transcriptLines(for id: UUID) throws -> [TranscriptLine] {
         guard let url = transcriptURL(for: id), FileManager.default.fileExists(atPath: url.path) else { return [] }
         return try TranscriptJournal.read(url)
+    }
+
+    // MARK: AI provider
+
+    func apiKey(for provider: AIProvider) -> String? {
+        guard let key = Keychain.read(account: keychainPrefix + provider.keychainAccount), !key.isEmpty else {
+            return nil
+        }
+        return key
+    }
+
+    /// An empty key removes it.
+    func setAPIKey(_ key: String, for provider: AIProvider) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = keychainPrefix + provider.keychainAccount
+        do {
+            if trimmed.isEmpty {
+                try Keychain.delete(account: account)
+                providersWithKeys.remove(provider)
+            } else {
+                try Keychain.save(trimmed, account: account)
+                providersWithKeys.insert(provider)
+            }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// What's missing before the active provider can be used, or nil.
+    var aiProblem: String? {
+        let provider = settings.aiProvider
+        if provider.requiresAPIKey && !providersWithKeys.contains(provider) {
+            return "Isi kunci API \(provider.shortName) di Pengaturan."
+        }
+        guard provider != .anthropic else { return nil }
+        let models = settings.models(for: provider)
+        if URL(string: models.baseURL.trimmingCharacters(in: .whitespaces))?.host() == nil {
+            return "Isi alamat server \(provider.shortName) di Pengaturan."
+        }
+        if models.fastModel.trimmingCharacters(in: .whitespaces).isEmpty
+            || models.smartModel.trimmingCharacters(in: .whitespaces).isEmpty {
+            return "Pilih model \(provider.shortName) di Pengaturan."
+        }
+        return nil
+    }
+
+    var isAIReady: Bool { aiProblem == nil }
+
+    /// A client for the active provider, or nil while `aiProblem` says why not.
+    func aiClient() -> (any LLMClient)? {
+        guard isAIReady else { return nil }
+        let provider = settings.aiProvider
+        let key = provider.acceptsAPIKey ? apiKey(for: provider) : nil
+        if provider == .anthropic {
+            return key.map { ClaudeClient(apiKey: $0) }
+        }
+        let models = settings.models(for: provider)
+        guard let baseURL = URL(string: models.baseURL.trimmingCharacters(in: .whitespaces)) else { return nil }
+        return OpenAICompatibleClient(
+            providerName: provider.shortName,
+            baseURL: baseURL,
+            apiKey: key,
+            fastModel: models.fastModel.trimmingCharacters(in: .whitespaces),
+            smartModel: models.smartModel.trimmingCharacters(in: .whitespaces),
+            usesMaxCompletionTokens: provider.usesMaxCompletionTokens)
     }
 
     // MARK: Recovery

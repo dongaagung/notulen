@@ -43,6 +43,12 @@ struct NotulenApp: App {
                 Divider()
             }
         }
+
+        Settings {
+            SettingsView()
+                .environment(store)
+                .environment(\.textScale, store.settings.textScale)
+        }
     }
 }
 
