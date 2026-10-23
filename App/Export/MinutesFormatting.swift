@@ -2,6 +2,8 @@ import Foundation
 
 /// Wording shared by the Markdown, PDF and Notion exports.
 enum MinutesFormatting {
+    static let untitled = "Tanpa judul"
+
     /// "Kamis, 22 Oktober 2026 · 09.00–10.12 · 1 jam 12 menit · Bahasa
     /// Indonesia"; just the start time while the meeting has no end.
     static func dateLine(_ meeting: Meeting, timeZone: TimeZone = .current) -> String {
@@ -23,6 +25,37 @@ enum MinutesFormatting {
         return parts.joined(separator: " · ")
     }
 
+    /// The meeting's title, else the title the AI suggested, else "Tanpa
+    /// judul". On one line.
+    static func title(_ minutes: Minutes, meeting: Meeting) -> String {
+        let title = singleLine(meeting.title)
+        if !title.isEmpty { return title }
+        let suggestion = oneLine(minutes.titleSuggestion, in: meeting)
+        return suggestion.isEmpty ? untitled : suggestion
+    }
+
+    /// The summary with the speakers' names, its line breaks kept; nil when
+    /// there is none.
+    static func summary(_ minutes: Minutes, in meeting: Meeting) -> String? {
+        let summary = meeting.named(minutes.summary).trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? nil : summary
+    }
+
+    /// AI text for a one-line field (a task, a decision, a topic's point…),
+    /// with the speakers' current names.
+    static func oneLine(_ text: String, in meeting: Meeting) -> String {
+        singleLine(meeting.named(text))
+    }
+
+    /// Line breaks, and the spaces around them, become one space, so AI
+    /// text can't break a list item or a heading.
+    static func singleLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     /// "Bahasa Indonesia" for "id-ID", "Bahasa Inggris" for "en-US".
     static func languageName(_ bcp47: String) -> String {
         guard let code = Locale(identifier: bcp47).language.languageCode?.identifier,
@@ -39,12 +72,18 @@ enum MinutesFormatting {
     /// The speaker's name once they have one, else the name the AI heard,
     /// else "Pembicara N"; "pemegang tidak disebut" when nobody was named.
     static func owner(_ item: Minutes.ActionItem, in meeting: Meeting) -> String {
-        let heard = item.owner?.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let heard = oneLine(item.owner?.name ?? "", in: meeting)
         if let speaker = item.owner?.speaker {
             if meeting.hasName(speaker) || heard.isEmpty { return meeting.displayName(for: speaker) }
             return heard
         }
         return heard.isEmpty ? "pemegang tidak disebut" : heard
+    }
+
+    /// The deadline as said, or nil when nobody gave one.
+    static func due(_ item: Minutes.ActionItem, in meeting: Meeting) -> String? {
+        let due = oneLine(item.due ?? "", in: meeting)
+        return due.isEmpty ? nil : due
     }
 
     /// The owner, then the remote speakers in order, merged ones once.

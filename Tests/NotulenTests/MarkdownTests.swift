@@ -63,6 +63,12 @@ struct MarkdownTests {
         #expect(render(empty).contains("## Pertanyaan terbuka\n\n_Tidak ada._\n"))
     }
 
+    @Test func blankSummarySaysNone() {
+        var blank = minutes
+        blank.summary = " \n "
+        #expect(render(blank).contains("## Ringkasan\n\n_Tidak ada._\n"))
+    }
+
     @Test func timesPastAnHourUseHours() {
         var late = minutes
         late.decisions = [Minutes.Decision(id: "d", text: "Ok", at: 4514)]
@@ -71,5 +77,45 @@ struct MarkdownTests {
 
     @Test func participantsListMergedSpeakersOnce() {
         #expect(MinutesFormatting.participants(of: meeting()) == ["Saya", "Andi", "Pembicara 2"])
+    }
+
+    @Test func heardOwnerNameShowsSpeakerNames() {
+        var heard = minutes
+        heard.actionItems = [item("a1", owner: .init(speaker: nil, name: "[[s1]] dan\n[[s3]]"), due: nil)]
+        #expect(MinutesFormatting.owner(heard.actionItems[0], in: meeting()) == "Andi dan Pembicara 2")
+        #expect(render(heard).contains("- [ ] Tugas a1 — Andi dan Pembicara 2 (01:00)"))
+    }
+
+    @Test func titleFallsBackPastBlankTitles() {
+        var blankTitle = meeting()
+        blankTitle.title = " \n "
+        var noSuggestion = minutes
+        noSuggestion.titleSuggestion = "  "
+        #expect(MinutesFormatting.title(minutes, meeting: blankTitle) == "Saran")
+        #expect(MinutesFormatting.title(noSuggestion, meeting: blankTitle) == "Tanpa judul")
+        #expect(render(noSuggestion, blankTitle).hasPrefix("# Tanpa judul\n"))
+        var padded = meeting()
+        padded.title = "  Rapat  "
+        #expect(MinutesFormatting.title(minutes, meeting: padded) == "Rapat")
+    }
+
+    @Test func oneLineFieldsCollapseLineBreaks() {
+        var broken = minutes
+        broken.summary = "Baris satu.\nBaris dua."
+        broken.decisions = [Minutes.Decision(id: "d1", text: "Rilis\n\n## diundur.", at: 14)]
+        broken.actionItems = [
+            Minutes.ActionItem(
+                id: "a1", task: "Tugas\n- palsu", owner: .init(speaker: .remote(1), name: nil), due: "Jumat\n depan",
+                at: 16),
+        ]
+        broken.openQuestions = [Minutes.OpenQuestion(id: "q1", question: "Anggaran?\r\nNaik?", context: nil, at: 52)]
+        broken.topics = [Minutes.Topic(title: "Status\nrilis", start: 2, end: 24, points: ["Fitur\n  selesai."])]
+        let out = render(broken)
+        #expect(out.contains("\nBaris satu.\nBaris dua.\n"))
+        #expect(out.contains("\n- Rilis ## diundur. (00:14)\n"))
+        #expect(out.contains("\n- [ ] Tugas - palsu — Andi · Jumat depan (00:16)\n"))
+        #expect(out.contains("\n- Anggaran? Naik? (00:52)\n"))
+        #expect(out.contains("\n### 1. Status rilis (00:02–00:24)\n"))
+        #expect(out.contains("\n- Fitur selesai.\n"))
     }
 }
