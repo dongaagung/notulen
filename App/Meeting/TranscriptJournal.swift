@@ -15,7 +15,16 @@ final class TranscriptJournal {
             }
         }
         let handle = try FileHandle(forWritingTo: url)
-        try handle.seekToEnd()
+        let end = try handle.seekToEnd()
+        if end > 0 {
+            // A crash can leave a partial last row; keep it on its own line.
+            let reader = try FileHandle(forReadingFrom: url)
+            defer { try? reader.close() }
+            try reader.seek(toOffset: end - 1)
+            if try reader.read(upToCount: 1) != Data([0x0A]) {
+                try handle.write(contentsOf: Data([0x0A]))
+            }
+        }
         self.handle = handle
     }
 

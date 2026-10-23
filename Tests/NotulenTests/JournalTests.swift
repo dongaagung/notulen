@@ -3,11 +3,12 @@ import Testing
 @testable import Notulen
 
 @MainActor
-struct JournalTests {
-    let url = FileManager.default.temporaryDirectory
+final class JournalTests {
+    let root = FileManager.default.temporaryDirectory
         .appending(path: "NotulenTests-\(UUID().uuidString)")
-        .appending(path: "meeting")
-        .appending(path: "transcript.jsonl")
+    var url: URL { root.appending(path: "meeting").appending(path: "transcript.jsonl") }
+
+    deinit { try? FileManager.default.removeItem(at: root) }
 
     private func line(_ text: String, start: TimeInterval) -> TranscriptLine {
         TranscriptLine(channel: .meeting, speaker: .remote(1), text: text, start: start, end: start + 2)
@@ -43,5 +44,31 @@ struct JournalTests {
         try second.append(line("dua", start: 3))
         second.close()
         #expect(try TranscriptJournal.read(url).count == 2)
+    }
+
+    @Test func resumeAfterTruncatedTailKeepsNewLine() throws {
+        let journal = try TranscriptJournal(url: url)
+        try journal.append(line("satu", start: 0))
+        try journal.append(line("dua", start: 3))
+        journal.close()
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(#"{"id":""#.utf8))
+        try handle.close()
+        let resumed = try TranscriptJournal(url: url)
+        try resumed.append(line("tiga", start: 6))
+        resumed.close()
+        #expect(try TranscriptJournal.read(url).map(\.text) == ["satu", "dua", "tiga"])
+    }
+
+    @Test func lastLineWithoutNewlineStillReads() throws {
+        let journal = try TranscriptJournal(url: url)
+        let a = line("satu", start: 0)
+        try journal.append(a)
+        journal.close()
+        var data = try Data(contentsOf: url)
+        data.removeLast()
+        try data.write(to: url)
+        #expect(try TranscriptJournal.read(url) == [a])
     }
 }
