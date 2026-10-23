@@ -23,6 +23,10 @@ final class MicCapture: MicCapturing {
 
     /// Called with the input device's name after the mic moved to another device.
     var onDeviceChange: (@MainActor (String) -> Void)?
+    /// Called with the last error when every restart attempt after a device
+    /// change failed. The mic stays silent until the next device change, or
+    /// until it's turned off and on.
+    var onRestartFailure: (@MainActor (any Error) -> Void)?
 
     private let engine = AVAudioEngine()
     private var continuation: AsyncStream<AudioChunk>.Continuation?
@@ -194,6 +198,8 @@ final class MicCapture: MicCapturing {
         } catch {
             if attempt < Self.restartAttempts {
                 scheduleRestart(after: .seconds(1), attempt: attempt + 1)
+            } else {
+                onRestartFailure?(error)
             }
             return
         }
