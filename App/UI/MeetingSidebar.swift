@@ -13,7 +13,7 @@ struct MeetingSidebar: View {
 
     var body: some View {
         let groups = MeetingGroups.group(
-            store.meetings.filter { MeetingGroups.matches($0, query: query) }, now: .now, calendar: .current)
+            store.meetings.filter { MeetingGroups.matches($0, query: query) }, now: .now, calendar: MeetingGroups.calendar)
         List(selection: $selection) {
             ForEach(groups, id: \.title) { group in
                 Section(group.title) {

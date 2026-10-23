@@ -63,4 +63,38 @@ struct SidebarTests {
         }
         #expect(!MeetingGroups.matches(m, query: "zebra"))
     }
+
+    @Test func weekStartsOnMonday() {
+        let now = date(10, 22, 10)
+        let groups = MeetingGroups.group(
+            [meeting("mon", date(10, 19)), meeting("sun", date(10, 18))], now: now, calendar: calendar)
+        #expect(groups.map(\.title) == ["Minggu ini", "Oktober 2026"])
+        #expect(groups[0].meetings.map(\.title) == ["mon"])
+        #expect(MeetingGroups.calendar.firstWeekday == 2)
+    }
+
+    @Test func futureMeetingsCountAsTodayAndStayFirst() {
+        let now = date(10, 22, 10)
+        let groups = MeetingGroups.group(
+            [meeting("later", date(12, 5)), meeting("past", date(10, 20))], now: now, calendar: calendar)
+        #expect(groups.map(\.title) == ["Hari ini", "Minggu ini"])
+        #expect(groups[0].meetings.map(\.title) == ["later"])
+    }
+
+    @Test func weekSpansTheYearBoundary() {
+        // Saturday 2 Jan 2027: the Monday-first week began Monday 28 Dec 2026.
+        let now = calendar.date(from: DateComponents(year: 2027, month: 1, day: 2, hour: 10))!
+        let dec30 = calendar.date(from: DateComponents(year: 2026, month: 12, day: 30, hour: 9))!
+        let dec20 = calendar.date(from: DateComponents(year: 2026, month: 12, day: 20, hour: 9))!
+        let groups = MeetingGroups.group([meeting("a", dec30), meeting("b", dec20)], now: now, calendar: calendar)
+        #expect(groups.map(\.title) == ["Minggu ini", "Desember 2026"])
+    }
+
+    @Test func earlierTodayIsNotThisWeekGroup() {
+        let now = date(10, 22, 15)
+        let groups = MeetingGroups.group(
+            [meeting("morning", date(10, 22, 8)), meeting("tuesday", date(10, 20))], now: now, calendar: calendar)
+        #expect(groups.map(\.title) == ["Hari ini", "Minggu ini"])
+        #expect(groups[0].meetings.map(\.title) == ["morning"])
+    }
 }

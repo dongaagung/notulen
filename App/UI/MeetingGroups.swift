@@ -2,6 +2,13 @@ import Foundation
 
 /// Sidebar grouping by date, and the sidebar search.
 enum MeetingGroups {
+    /// The user's calendar with Monday as the first day of the week.
+    static var calendar: Calendar {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        return calendar
+    }
+
     /// "Hari ini", "Minggu ini" (the calendar week of `now`), then one group
     /// per month, newest first. Empty groups are left out.
     static func group(
@@ -23,7 +30,8 @@ enum MeetingGroups {
             }
         }
         for meeting in meetings.sorted(by: { $0.startedAt > $1.startedAt }) {
-            if calendar.isDate(meeting.startedAt, inSameDayAs: now) {
+            // Dated after now (clock skew, imports) counts as today.
+            if meeting.startedAt > now || calendar.isDate(meeting.startedAt, inSameDayAs: now) {
                 add(meeting, to: "Hari ini")
             } else if let week, week.contains(meeting.startedAt) {
                 add(meeting, to: "Minggu ini")
