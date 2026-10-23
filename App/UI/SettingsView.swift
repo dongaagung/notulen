@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Pengaturan (⌘,): Umum, AI and Tentang. A Notion tab comes later.
+/// Pengaturan (⌘,): Umum, AI, Notion and Tentang.
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -9,6 +9,8 @@ struct SettingsView: View {
             Form { AIProviderSection() }
                 .formStyle(.grouped)
                 .tabItem { Label("AI", systemImage: "sparkles") }
+            NotionSettings()
+                .tabItem { Label("Notion", systemImage: "doc.text") }
             AboutSettings()
                 .tabItem { Label("Tentang", systemImage: "info.circle") }
         }
@@ -103,6 +105,66 @@ private struct GeneralSettings: View {
 
     private static func languageName(_ id: String) -> String {
         indonesian.localizedString(forIdentifier: id) ?? id
+    }
+}
+
+/// The Notion integration: its token (Keychain) and the page that minutes
+/// pages are created under.
+private struct NotionSettings: View {
+    @Environment(AppStore.self) private var store
+    @ViewState private var tokenDraft = ""
+    /// The page as typed, a URL or an ID; the store keeps the parsed ID.
+    @ViewState private var pageDraft = ""
+
+    private var pageIsInvalid: Bool {
+        !pageDraft.trimmingCharacters(in: .whitespaces).isEmpty && NotionPageID.parse(pageDraft) == nil
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                HStack {
+                    SecureField(
+                        "Token integrasi", text: $tokenDraft,
+                        prompt: Text(store.hasNotionToken ? "Tersimpan. Tempel token baru untuk menggantinya" : "ntn_…"))
+                        .onSubmit(saveToken)
+                    Button("Simpan", action: saveToken)
+                        .disabled(tokenDraft.isEmpty)
+                    if store.hasNotionToken {
+                        Button("Hapus", role: .destructive) { store.setNotionToken("") }
+                    }
+                }
+                TextField("Halaman induk (URL atau ID)", text: $pageDraft)
+                if pageIsInvalid {
+                    Label("ID halaman tidak dikenali", systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Notion")
+            } footer: {
+                Text("""
+                    Buat integrasi internal di notion.so/profile/integrations, lalu bagikan halaman induk \
+                    ke integrasi itu lewat menu ••• › Connections. Tiap meeting menjadi satu halaman di \
+                    bawahnya; mengirim lagi memperbarui halaman yang sama. Token disimpan di Keychain.
+                    """)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { pageDraft = store.settings.notionParentPageID ?? "" }
+        .onChange(of: pageDraft) {
+            let id = NotionPageID.parse(pageDraft)
+            let empty = pageDraft.trimmingCharacters(in: .whitespaces).isEmpty
+            // A half-typed or wrong value stops sending until it's fixed.
+            let stored = empty || id == nil ? nil : id
+            if stored != store.settings.notionParentPageID { store.settings.notionParentPageID = stored }
+        }
+    }
+
+    private func saveToken() {
+        guard !tokenDraft.isEmpty else { return }
+        store.setNotionToken(tokenDraft)
+        tokenDraft = ""
     }
 }
 

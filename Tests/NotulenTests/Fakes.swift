@@ -305,3 +305,108 @@ extension AVAudioPCMBuffer {
         return buffer
     }
 }
+
+/// Stands in for the network. Every request through `session` is recorded
+/// (body included) and answered without leaving the process. Replies are
+/// per host, so suites for different services don't disturb each other:
+/// `respond` gives one fixed reply to every host without a handler, and
+/// `handle(host:)` scripts a host from the request.
+final class StubURLProtocol: URLProtocol {
+    struct Reply: Sendable {
+        var status = 200
+        var headers: [String: String] = [:]
+        var body = Data()
+
+        init(_ status: Int = 200, headers: [String: String] = [:], body: String = "") {
+            self.status = status
+            self.headers = headers
+            self.body = Data(body.utf8)
+        }
+    }
+
+    struct Recorded: Sendable {
+        let method: String
+        let url: URL
+        let headers: [String: String]
+        let body: Data
+
+        var path: String { url.path() }
+        var query: String { url.query() ?? "" }
+        /// The JSON body, or nil when there is none.
+        var json: [String: Any]? { try? JSONSerialization.jsonObject(with: body) as? [String: Any] }
+    }
+
+    typealias Handler = @Sendable (Recorded) -> Reply
+
+    private struct State {
+        var fallback = Reply()
+        var handlers: [String: Handler] = [:]
+        var recorded: [String: [Recorded]] = [:]
+    }
+
+    private static let state = Mutex(State())
+
+    static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }()
+
+    /// The reply for hosts without a handler.
+    static func respond(_ status: Int, body: String) {
+        state.withLock { $0.fallback = Reply(status, body: body) }
+    }
+
+    /// Answers requests to `host` with `handler`, and forgets what it
+    /// recorded before.
+    static func handle(host: String, _ handler: @escaping Handler) {
+        state.withLock {
+            $0.handlers[host] = handler
+            $0.recorded[host] = []
+        }
+    }
+
+    /// What `host` received, in order.
+    static func requests(host: String) -> [Recorded] {
+        state.withLock { $0.recorded[host] ?? [] }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let url = request.url!
+        let host = url.host() ?? ""
+        let recorded = Recorded(
+            method: request.httpMethod ?? "GET", url: url,
+            headers: request.allHTTPHeaderFields ?? [:], body: Self.body(of: request))
+        let reply = Self.state.withLock { state in
+            state.recorded[host, default: []].append(recorded)
+            return (state.handlers[host], state.fallback)
+        }
+        let answer = reply.0?(recorded) ?? reply.1
+        let response = HTTPURLResponse(
+            url: url, statusCode: answer.status, httpVersion: "HTTP/1.1", headerFields: answer.headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: answer.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    /// URLSession hands uploads over as a stream, not `httpBody`.
+    private static func body(of request: URLRequest) -> Data {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+}

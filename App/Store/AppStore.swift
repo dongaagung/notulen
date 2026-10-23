@@ -16,6 +16,8 @@ final class AppStore {
     /// Providers with a key in the Keychain, so views update when one is
     /// saved or removed without reading the Keychain on every redraw.
     private(set) var providersWithKeys: Set<AIProvider> = []
+    /// Whether a Notion token is in the Keychain.
+    private(set) var hasNotionToken = false
 
     private let files: JSONFileStore?
     /// Prepended to Keychain account names; tests use their own.
@@ -28,6 +30,7 @@ final class AppStore {
         self.files = files
         self.keychainPrefix = keychainPrefix
         providersWithKeys = Set(AIProvider.allCases.filter { $0.acceptsAPIKey && apiKey(for: $0) != nil })
+        hasNotionToken = notionToken != nil
         guard let files else {
             lastError = "Tidak bisa membuka Application Support; perubahan tidak akan tersimpan."
             return
@@ -110,6 +113,37 @@ final class AppStore {
             lastError = error.localizedDescription
         }
     }
+
+    // MARK: Notion
+
+    static let notionTokenAccount = "notion-token"
+
+    /// The integration token, or nil.
+    var notionToken: String? {
+        guard let token = Keychain.read(account: keychainPrefix + Self.notionTokenAccount), !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
+
+    /// An empty token removes it.
+    func setNotionToken(_ token: String) {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = keychainPrefix + Self.notionTokenAccount
+        do {
+            if trimmed.isEmpty {
+                try Keychain.delete(account: account)
+            } else {
+                try Keychain.save(trimmed, account: account)
+            }
+            hasNotionToken = !trimmed.isEmpty
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Sending to Notion needs the token and the parent page.
+    var isNotionReady: Bool { hasNotionToken && settings.notionParentPageID != nil }
 
     /// What's missing before the active provider can be used, or nil.
     var aiProblem: String? {

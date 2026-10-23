@@ -34,11 +34,18 @@ struct MinutesView: View {
     @ViewState private var copied = false
     /// A PDF is being written; another export waits for it.
     @ViewState private var exportsPDF = false
+    /// Sending to Notion: under way, or done with the page's ID.
+    @ViewState private var notion = NotionState.idle
     /// The journal has been read, so an empty `lines` means nothing was said.
     @ViewState private var linesLoaded = false
     /// The page's width, for `LiveMeetingView.sidePadding(forWidth:)`.
     @ViewState private var width = CGFloat.infinity
 
+    enum NotionState: Equatable {
+        case idle, sending, sent(String)
+    }
+
+    static let notionHelp = "Isi token dan halaman induk Notion di Pengaturan."
     static let regenerateTitle = "Buat ulang notulen?"
     static let regenerateMessage = "Centang action item dan terjemahan yang ada akan dihapus."
     /// The "Terjemahkan ke" menu: name and code.
@@ -110,7 +117,31 @@ struct MinutesView: View {
                     .accessibilityAddTraits(.updatesFrequently)
             }
         }
+        .overlay(alignment: .bottom) {
+            if case .sent(let id) = notion {
+                HStack(spacing: 12) {
+                    Label("Terkirim ke Notion", systemImage: "checkmark")
+                        .font(.callout.weight(.medium))
+                    Button("Buka di Notion") {
+                        if let url = Self.notionURL(id) { NSWorkspace.shared.open(url) }
+                    }
+                    .buttonStyle(.link)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.bottom, 24)
+                .transition(.opacity)
+                .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
         .animation(.default, value: copied)
+        .animation(.default, value: notion)
+        .task(id: notion) {
+            guard case .sent = notion else { return }
+            try? await Task.sleep(for: .seconds(8))
+            notion = .idle
+        }
         .task(id: copied) {
             guard copied else { return }
             try? await Task.sleep(for: .milliseconds(1500))
@@ -315,12 +346,20 @@ struct MinutesView: View {
         .help("Bahasa notulen")
     }
 
-    /// Exports the minutes in the language shown. Notion comes in a later task.
+    /// The page's address in Notion: the ID without dashes.
+    static func notionURL(_ id: String) -> URL? {
+        URL(string: "https://www.notion.so/\(id.replacingOccurrences(of: "-", with: ""))")
+    }
+
+    /// Exports the minutes in the language shown.
     private var shareMenu: some View {
         Menu {
             Button("Salin sebagai Markdown") { copyMarkdown() }
             Button("Ekspor PDF…") { exportPDF() }
                 .disabled(exportsPDF)
+            Button("Kirim ke Notion") { sendToNotion() }
+                .disabled(!store.isNotionReady || notion == .sending)
+                .help(store.isNotionReady ? "" : Self.notionHelp)
         } label: {
             Label("Bagikan", systemImage: "square.and.arrow.up")
         }
@@ -370,6 +409,33 @@ struct MinutesView: View {
         pasteboard.clearContents()
         pasteboard.setString(MinutesMarkdown.render(minutes, meeting: meeting), forType: .string)
         copied = true
+    }
+
+    /// Creates the minutes' Notion page, or rewrites the one made before, and
+    /// stores its ID.
+    private func sendToNotion() {
+        guard let minutes = shownMinutes, let token = store.notionToken,
+              let parent = store.settings.notionParentPageID, notion != .sending
+        else { return }
+        let id = meeting.id
+        let title = MinutesFormatting.title(minutes, meeting: meeting)
+        let children = NotionBlocks.blocks(for: minutes, meeting: meeting)
+        let existing = meeting.notionPageID
+        notion = .sending
+        Task {
+            do {
+                let page = try await NotionClient(token: token)
+                    .publish(existing: existing, parent: parent, title: title, children: children)
+                if var latest = store.meeting(id), latest.notionPageID != page {
+                    latest.notionPageID = page
+                    store.save(latest)
+                }
+                notion = .sent(page)
+            } catch {
+                notion = .idle
+                store.lastError = "Tidak bisa mengirim ke Notion: \(error.localizedDescription)"
+            }
+        }
     }
 
     /// Asks where to save, then writes the PDF there.

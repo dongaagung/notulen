@@ -154,35 +154,6 @@ struct ClaudeClientHTTPTests {
     }
 }
 
-final class StubURLProtocol: URLProtocol {
-    // Tests using this run serialized, so one shared response is enough.
-    nonisolated(unsafe) private static var status = 200
-    nonisolated(unsafe) private static var body = Data()
-
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [StubURLProtocol.self]
-        return URLSession(configuration: configuration)
-    }()
-
-    static func respond(_ status: Int, body: String) {
-        self.status = status
-        self.body = Data(body.utf8)
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        let response = HTTPURLResponse(url: request.url!, statusCode: Self.status, httpVersion: "HTTP/1.1", headerFields: nil)!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.body)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-}
-
 struct OpenAICompatibleRequestTests {
     let client = OpenAICompatibleClient(
         providerName: "Groq", baseURL: URL(string: "https://api.groq.com/openai/v1")!,
