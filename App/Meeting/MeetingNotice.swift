@@ -7,6 +7,8 @@ enum MeetingNotice: Equatable, Identifiable {
     /// means the audio-capture permission was denied.
     case silent
     case error(String)
+    /// Recording went on by itself after the Mac slept this long.
+    case resumedAfterSleep(TimeInterval)
 
     /// The meeting audio kept for speaker separation reached its 4-hour cap.
     static let speakerAudioFull = MeetingNotice.error(
@@ -18,6 +20,7 @@ enum MeetingNotice: Equatable, Identifiable {
         switch self {
         case .silent: "silent"
         case .error(let message): "error:\(message)"
+        case .resumedAfterSleep(let duration): "resumedAfterSleep:\(duration)"
         }
     }
 
@@ -30,6 +33,8 @@ enum MeetingNotice: Equatable, Identifiable {
             """
         case .error(let message):
             message
+        case .resumedAfterSleep(let duration):
+            "Rekaman dilanjutkan setelah Mac tidur \(MeetingTime.duration(duration))."
         }
     }
 }

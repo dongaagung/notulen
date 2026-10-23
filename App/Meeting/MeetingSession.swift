@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 import Observation
@@ -5,6 +6,9 @@ import Observation
 /// Records one meeting at a time: captures the meeting audio and the mic,
 /// transcribes both on device and journals every final line. The meeting
 /// audio is also kept in RAM (16 kHz mono) for speaker separation.
+/// Keeps the Mac from idle-sleeping meanwhile; if it sleeps anyway, capture
+/// stops and the sleep becomes a gap. Offers to finish once the meeting
+/// looks over.
 @MainActor
 @Observable
 final class MeetingSession {
@@ -41,6 +45,11 @@ final class MeetingSession {
     private(set) var notices: [MeetingNotice] = []
     /// What a slow start is doing, such as downloading the speech model.
     private(set) var startupStatus: String?
+    /// How long the Mac slept, while the owner is asked whether to record on.
+    /// Nothing records until `answerWake(continueRecording:)`.
+    private(set) var wakeQuestion: TimeInterval?
+    /// The meeting looks over: offer to finish it. Recording goes on.
+    private(set) var offersFinish = false
 
     /// Recording time so far; 0 until capture starts.
     var elapsed: TimeInterval {
@@ -55,7 +64,12 @@ final class MeetingSession {
     private let makeSpeech: @Sendable (Locale, [String]) -> any SttProvider
     private let now: () -> Date
     private let makeAudioBuffer: () -> MeetingAudioBuffer
+    /// Whether the app with this bundle ID runs.
+    private let appRunning: @MainActor (String) -> Bool
+    private let power: PowerGuard
 
+    /// What the meeting records with; a wake starts capture with it again.
+    private var configuration: Configuration?
     private var devices: CaptureDevices?
     private var journal: TranscriptJournal?
     /// The meeting channel as 16 kHz mono, for speaker separation.
@@ -71,6 +85,12 @@ final class MeetingSession {
     private var monitorTask: Task<Void, Never>?
     private var capturesMeeting = false
     private var heardMeeting = false
+    /// Counts quiet meeting audio for the offer to finish; nil without it.
+    private var endDetector: MeetingEndDetector?
+    /// Meeting time the Mac went to sleep at, until recording goes on.
+    private var sleptAt: TimeInterval?
+    /// The last lines coming in after capture stopped for sleep.
+    private var sleepDrain: Task<Void, Never>?
 
     init(
         store: AppStore,
@@ -79,13 +99,23 @@ final class MeetingSession {
             SpeechAnalyzerProvider(locale: $0, vocabulary: $1)
         },
         now: @escaping () -> Date = Date.init,
-        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
+        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() },
+        appRunning: @escaping @MainActor (String) -> Bool = {
+            !NSRunningApplication.runningApplications(withBundleIdentifier: $0).isEmpty
+        },
+        power: PowerGuard = PowerGuard()
     ) {
         self.store = store
         self.makeDevices = devices
         self.makeSpeech = speech
         self.now = now
         self.makeAudioBuffer = audioBuffer
+        self.appRunning = appRunning
+        self.power = power
+        power.onWillSleep = { [weak self] in self?.handleWillSleep() }
+        power.onDidWake = { [weak self] in
+            Task { [weak self] in await self?.handleDidWake() }
+        }
     }
 
     // MARK: Lifecycle
@@ -109,7 +139,7 @@ final class MeetingSession {
             store.delete(meeting)
             throw error
         }
-        take(meeting, journal: journal, transcript: Transcript())
+        take(meeting, journal: journal, transcript: Transcript(), configuration: configuration)
         phase = .starting
         startTask = Task { await start(configuration, resumedAfter: nil) }
     }
@@ -132,11 +162,11 @@ final class MeetingSession {
         meeting.status = .recording
         meeting.endedAt = nil
         store.save(meeting)
-        take(meeting, journal: journal, transcript: Transcript(lines: lines))
-        phase = .recording
         let configuration = Configuration(
             title: meeting.title, audioSource: meeting.audioSource,
             locale: Locale(identifier: meeting.language), vocabulary: store.settings.vocabulary)
+        take(meeting, journal: journal, transcript: Transcript(lines: lines), configuration: configuration)
+        phase = .recording
         startTask = Task { await start(configuration, resumedAfter: gap) }
     }
 
@@ -152,16 +182,20 @@ final class MeetingSession {
     }
 
     /// Starts over with `meeting`, whose final lines go to `journal`.
-    private func take(_ meeting: Meeting, journal: TranscriptJournal, transcript: Transcript) {
+    private func take(
+        _ meeting: Meeting, journal: TranscriptJournal, transcript: Transcript, configuration: Configuration
+    ) {
         self.meeting = meeting
         self.journal = journal
         self.transcript = transcript
+        self.configuration = configuration
         notices = []
         offsets = [:]
         meetingAudio = makeAudioBuffer()
         capturesMeeting = false
         heardMeeting = false
         startupStatus = "Menyiapkan pengenalan suara…"
+        resetSleepAndOffers()
     }
 
     /// Stops a start that is still getting ready, such as downloading the
@@ -177,9 +211,9 @@ final class MeetingSession {
         phase = .idle
     }
 
-    /// `crashGap`: the gap a resume added. A resumed meeting keeps its start
-    /// time; it is already recording.
-    private func start(_ configuration: Configuration, resumedAfter crashGap: Gap?) async {
+    /// `gap`: the gap a resume or a wake added. A resumed meeting keeps its
+    /// start time; it is already recording.
+    private func start(_ configuration: Configuration, resumedAfter gap: Gap?) async {
         let speech = makeSpeech(configuration.locale, configuration.vocabulary)
         do {
             // Downloads the on-device speech model on first use.
@@ -193,7 +227,7 @@ final class MeetingSession {
             guard !Task.isCancelled else { return }
             let message = "Pengenalan suara tidak bisa disiapkan: \(error.localizedDescription)"
             post(.error(message))
-            failStart(message, resumedAfter: crashGap)
+            failStart(message, resumedAfter: gap)
             return
         }
         guard !Task.isCancelled else { return }
@@ -204,7 +238,7 @@ final class MeetingSession {
         let micAllowed = await type(of: devices.mic).requestPermission()
         guard !Task.isCancelled else { return }
 
-        if crashGap == nil {
+        if gap == nil {
             // Meeting time 0 is when capture starts, not when the start began.
             meeting?.startedAt = now()
             if let meeting { store.save(meeting) }
@@ -212,10 +246,11 @@ final class MeetingSession {
         startCapture(devices, micAllowed: micAllowed, speech: speech)
         startupStatus = nil
         guard !listeners.isEmpty else {
-            failStart(notices.map(\.message).joined(separator: "\n"), resumedAfter: crashGap)
+            failStart(notices.map(\.message).joined(separator: "\n"), resumedAfter: gap)
             return
         }
         phase = .recording
+        power.begin()
         startMonitoring()
     }
 
@@ -236,41 +271,66 @@ final class MeetingSession {
     private func endRecording(as status: MeetingStatus) async -> Meeting? {
         guard phase == .recording else { return nil }
         phase = .stopping
-        // A resumed meeting may still be getting capture ready.
-        startTask?.cancel()
-        startTask = nil
-        startupStatus = nil
-        monitorTask?.cancel()
-        monitorTask = nil
-        stopCapture()
-        await finishListeners(within: .seconds(3))
-        // The relays end with the capture streams; nothing may write to the
-        // buffer once it's wiped.
-        relays.forEach { $0.cancel() }
-        for relay in relays { await relay.value }
-        relays = []
-        transcript.discardVolatile(.meeting)
-        transcript.discardVolatile(.mic)
+        wakeQuestion = nil
+        offersFinish = false
+        haltCapture()
+        // Capture that stopped for sleep may still be draining.
+        await sleepDrain?.value
+        sleepDrain = nil
+        await drainCapture()
         meeting?.status = status
-        // An interrupted meeting goes on later.
-        if status != .interrupted { meeting?.endedAt = now() }
+        // An interrupted meeting goes on later. One stopped while the Mac
+        // slept, or before the owner answered after it woke, ended when its
+        // recording did, not the next morning.
+        if status != .interrupted, let startedAt = meeting?.startedAt {
+            meeting?.endedAt = sleptAt.map { startedAt.addingTimeInterval($0) } ?? now()
+        }
+        resetSleepAndOffers()
         if let meeting { store.save(meeting) }
         journal?.close()
         journal = nil
+        power.end()
         // Task 17 hands the buffer to the finisher instead.
         meetingAudio.wipe()
         phase = .idle
         return meeting
     }
 
+    /// Stops capture and the work around it at once; `drainCapture()` then
+    /// collects the last lines.
+    private func haltCapture() {
+        // A resumed or woken meeting may still be getting capture ready.
+        startTask?.cancel()
+        startTask = nil
+        startupStatus = nil
+        monitorTask?.cancel()
+        monitorTask = nil
+        stopCapture()
+    }
+
+    /// Once capture stopped: waits up to 3 s for the last lines, then for
+    /// the relays. The meeting stays as it is.
+    private func drainCapture() async {
+        await finishListeners(within: .seconds(3))
+        // The relays end with the capture streams; nothing may write to the
+        // buffer once it's wiped.
+        let pending = relays
+        relays = []
+        pending.forEach { $0.cancel() }
+        for relay in pending { await relay.value }
+        transcript.discardVolatile(.meeting)
+        transcript.discardVolatile(.mic)
+    }
+
     /// Nothing could be recorded. A new meeting is saved as failed, with why.
-    /// A resumed one goes back to interrupted without the resume's gap, to
-    /// resume or finish later, and the owner hears why in the error bar
-    /// (the live view is gone by then).
-    private func failStart(_ message: String, resumedAfter crashGap: Gap?) {
+    /// A resumed or woken one goes back to interrupted without the gap the
+    /// resume or wake added, to resume or finish later, and the owner hears
+    /// why in the error bar (the live view is gone by then).
+    private func failStart(_ message: String, resumedAfter gap: Gap?) {
         discardCapture()
-        if let crashGap {
-            if let index = meeting?.gaps.lastIndex(of: crashGap) { meeting?.gaps.remove(at: index) }
+        resetSleepAndOffers()
+        if let gap {
+            if let index = meeting?.gaps.lastIndex(of: gap) { meeting?.gaps.remove(at: index) }
             meeting?.status = .interrupted
             store.lastError = "Rekaman tidak bisa dilanjutkan: \(message)"
         } else {
@@ -292,6 +352,7 @@ final class MeetingSession {
         listeners = []
         journal?.close()
         journal = nil
+        power.end()
         meetingAudio.wipe()
     }
 
@@ -307,11 +368,15 @@ final class MeetingSession {
     /// other records on its own.
     private func startCapture(_ devices: CaptureDevices, micAllowed: Bool, speech: any SttProvider) {
         reportFailures(of: devices)
+        capturesMeeting = false
+        endDetector = nil
         do {
             let stream = try devices.meeting.start()
             let offset = meetingTime
             offsets[.meeting] = offset
             capturesMeeting = true
+            // Quiet counts from when the meeting audio started, as after a wake.
+            endDetector = MeetingEndDetector(startedAt: offset)
             meetingAudio.beginSegment(atMeetingTime: offset)
             listen(to: tee(stream, into: meetingAudio), channel: .meeting, with: speech)
         } catch {
@@ -446,17 +511,116 @@ final class MeetingSession {
         }
     }
 
+    // MARK: Sleep
+
+    /// The Mac is about to sleep: capture stops at once. The meeting stays
+    /// recording with its journal open; waking decides what comes next.
+    /// `PowerGuard` calls it; internal for tests.
+    func handleWillSleep() {
+        guard phase == .recording, sleptAt == nil else { return }
+        sleptAt = meetingTime
+        haltCapture()
+        sleepDrain = Task { await drainCapture() }
+    }
+
+    /// After a short sleep recording goes on by itself, with the sleep as a
+    /// gap. After a long one nothing records until the owner answers
+    /// `wakeQuestion`. `PowerGuard` calls it; internal for tests.
+    func handleDidWake() async {
+        guard phase == .recording, let sleptAt, wakeQuestion == nil else { return }
+        await sleepDrain?.value
+        sleepDrain = nil
+        // Meanwhile another wake report may have handled it, or Selesai or
+        // quitting ended the meeting.
+        guard phase == .recording, self.sleptAt == sleptAt, wakeQuestion == nil else { return }
+        let slept = meetingTime - sleptAt
+        switch WakePolicy.decision(sleptFor: slept) {
+        case .resume:
+            recordAfterSleep()
+            notices.removeAll { if case .resumedAfterSleep = $0 { true } else { false } }
+            post(.resumedAfterSleep(slept))
+        case .ask:
+            // The question offers to finish too.
+            offersFinish = false
+            wakeQuestion = slept
+            NSApp?.activate()
+        }
+    }
+
+    /// The owner's answer after a long sleep: record on, with the sleep as a
+    /// gap that ends now, or finish the meeting where its recording stopped.
+    func answerWake(continueRecording: Bool) async {
+        guard phase == .recording, wakeQuestion != nil else { return }
+        wakeQuestion = nil
+        if continueRecording {
+            recordAfterSleep()
+        } else {
+            _ = await stop()
+        }
+    }
+
+    /// Saves the sleep as a gap that ends now and starts capture again the
+    /// way a resume does: new offsets and a new buffer segment from now, the
+    /// same journal. If capture can't start, the meeting goes back to
+    /// interrupted.
+    private func recordAfterSleep() {
+        guard let sleptAt, let configuration else { return }
+        self.sleptAt = nil
+        let gap = Gap(span: TimeSpan(start: sleptAt, end: max(sleptAt, meetingTime)), reason: .sleep)
+        meeting?.gaps.append(gap)
+        if let meeting { store.save(meeting) }
+        startTask = Task { await start(configuration, resumedAfter: gap) }
+    }
+
+    private func resetSleepAndOffers() {
+        sleptAt = nil
+        sleepDrain = nil
+        wakeQuestion = nil
+        offersFinish = false
+        endDetector = nil
+    }
+
     // MARK: Background work
 
-    /// Every 10 s while recording: warns if the meeting is silent.
+    /// Every 10 s while recording.
     private func startMonitoring() {
+        monitorTask?.cancel()
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled, phase == .recording else { return }
-                warnIfMeetingSilent()
+                checkMeeting()
             }
         }
+    }
+
+    /// Warns if the meeting is silent, and offers to finish once it looks
+    /// over. Runs every 10 s while recording; internal for tests.
+    func checkMeeting() {
+        // Nothing records while the Mac sleeps or the owner is asked.
+        guard sleptAt == nil else { return }
+        warnIfMeetingSilent()
+        offerFinishIfOver()
+    }
+
+    /// The owner chose Tetap merekam: the next offer comes after another
+    /// 10 quiet minutes.
+    func declineFinishOffer() {
+        guard offersFinish else { return }
+        offersFinish = false
+        endDetector?.declined(at: meetingTime)
+    }
+
+    /// Offers, never stops: the meeting audio has been quiet for 10 minutes,
+    /// or the one app it records quit.
+    private func offerFinishIfOver() {
+        guard !offersFinish, var detector = endDetector, let meeting else { return }
+        let running = switch meeting.audioSource {
+        case .systemWide: true
+        case .app(let bundleID, _): appRunning(bundleID)
+        }
+        offersFinish = detector.shouldOffer(at: meetingTime, appRunning: running)
+        endDetector = detector
     }
 
     /// Counts from when the meeting channel started, which is late in a
@@ -470,6 +634,7 @@ final class MeetingSession {
     private func heardMeetingAudio() {
         heardMeeting = true
         notices.removeAll { $0 == .silent }
+        endDetector?.heardSound(at: meetingTime)
     }
 
     private func post(_ notice: MeetingNotice) {

@@ -28,6 +28,11 @@ struct ContentView: View {
         .onChange(of: session.meeting?.id) { _, id in
             if let id { selection = id }
         }
+        // The live view asks after a long sleep or when the meeting looks
+        // over, so it shows even if another meeting was open.
+        .onChange(of: session.wakeQuestion != nil || session.offersFinish) { _, asks in
+            if asks, let id = session.meeting?.id { selection = id }
+        }
         .task {
             // The window also opens again mid-meeting; that meeting is fine.
             guard session.phase == .idle else { return }

@@ -136,6 +136,15 @@ extension TranscriptUpdate {
     }
 }
 
+/// A clock that only moves when the test moves it.
+final class TestClock {
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func advance(_ seconds: TimeInterval) {
+        now += seconds
+    }
+}
+
 /// Polls `condition` every 10 ms until it holds or `timeout` passes.
 @MainActor
 func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async -> Bool {

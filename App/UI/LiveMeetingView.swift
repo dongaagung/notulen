@@ -1,9 +1,17 @@
 import SwiftUI
 
 /// The meeting being recorded: title, timer and Selesai in the toolbar, the
-/// live transcript below.
+/// live transcript below. Asks what to do after a long sleep, and offers to
+/// finish once the meeting looks over.
 struct LiveMeetingView: View {
     @Environment(MeetingSession.self) private var session
+
+    static let finishOffer = "Meeting sepertinya sudah selesai. Selesaikan rekaman?"
+
+    /// Asked when the Mac woke after sleeping longer than `WakePolicy.resumeLimit`.
+    static func wakeQuestion(sleptFor duration: TimeInterval, title: String) -> String {
+        "Mac tidur selama \(MeetingTime.duration(duration)). Lanjutkan merekam “\(title)” atau Selesaikan?"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,7 +27,7 @@ struct LiveMeetingView: View {
                 .padding(.top, 12)
             }
             ForEach(session.notices) { notice in
-                Label(notice.message, systemImage: notice == .silent ? "speaker.slash" : "exclamationmark.triangle")
+                Label(notice.message, systemImage: Self.symbol(for: notice))
                     .font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -28,6 +36,18 @@ struct LiveMeetingView: View {
                     .padding(.top, 8)
             }
             TranscriptView(transcript: session.transcript)
+                // Not on the same view as the wake question: one view, one alert.
+                .alert(Self.finishOffer, isPresented: offersFinish) {
+                    // Task.immediate: the offer is gone before the alert closes.
+                    Button("Selesai") { Task.immediate { _ = await session.stop() } }
+                    Button("Tetap merekam", role: .cancel) { session.declineFinishOffer() }
+                }
+        }
+        .alert(Self.wakeQuestion(sleptFor: session.wakeQuestion ?? 0, title: title), isPresented: asksAfterWake) {
+            // No cancel: nothing records until the owner picks one.
+            Button("Lanjutkan") { Task.immediate { await session.answerWake(continueRecording: true) } }
+                .keyboardShortcut(.defaultAction)
+            Button("Selesaikan") { Task.immediate { await session.answerWake(continueRecording: false) } }
         }
         .navigationTitle(title)
         .toolbar {
@@ -56,6 +76,24 @@ struct LiveMeetingView: View {
     private var title: String {
         let title = session.meeting?.title ?? ""
         return title.isEmpty ? "Tanpa judul" : title
+    }
+
+    /// The buttons answer; the session then clears the question.
+    private var asksAfterWake: Binding<Bool> {
+        Binding { session.wakeQuestion != nil } set: { _ in }
+    }
+
+    /// The buttons answer; the session then clears the offer.
+    private var offersFinish: Binding<Bool> {
+        Binding { session.offersFinish } set: { _ in }
+    }
+
+    private static func symbol(for notice: MeetingNotice) -> String {
+        switch notice {
+        case .silent: "speaker.slash"
+        case .resumedAfterSleep: "moon.zzz"
+        case .error: "exclamationmark.triangle"
+        }
     }
 
     /// Red dot and recording time.

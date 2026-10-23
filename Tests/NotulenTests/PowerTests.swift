@@ -1,0 +1,334 @@
+import AppKit
+import Foundation
+import IOKit.pwr_mgt
+import Testing
+@testable import Notulen
+
+@MainActor
+final class PowerTests {
+    let root = FileManager.default.temporaryDirectory
+        .appending(path: "NotulenTests-\(UUID().uuidString)")
+    let meetingCapture = FakeCapture.meeting()
+    let micCapture = FakeCapture.mic()
+    let clock = TestClock()
+    let config = MeetingSession.Configuration(
+        title: "Weekly sync", audioSource: .systemWide, locale: Locale(identifier: "id-ID"), vocabulary: [])
+    /// What the fake `NSRunningApplication` check answers.
+    var appIsRunning = true
+    /// How many times the session asked for capture devices.
+    private(set) var deviceRequests = 0
+    /// Sleep and wake as a `PowerGuard` reported them.
+    private(set) var powerEvents: [String] = []
+    private(set) lazy var store = makeStore()
+
+    deinit { try? FileManager.default.removeItem(at: root) }
+
+    private func makeStore() -> AppStore {
+        AppStore(files: JSONFileStore(directory: root), keychainPrefix: "test-\(UUID().uuidString)-")
+    }
+
+    /// The clock stands still until the test moves it, so capture starts at
+    /// meeting time 0. Sleep and wake reach the session only through
+    /// `power`'s own notification center, never the system's.
+    private func makeSession(
+        _ speech: FakeSpeech = FakeSpeech(),
+        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() },
+        power: PowerGuard = PowerGuard(notificationCenter: NotificationCenter())
+    ) -> MeetingSession {
+        let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture)
+        let clock = clock
+        return MeetingSession(
+            store: store,
+            devices: { [unowned self] _ in
+                deviceRequests += 1
+                return devices
+            },
+            speech: { _, _ in speech }, now: { clock.now }, audioBuffer: audioBuffer,
+            appRunning: { [unowned self] _ in appIsRunning },
+            power: power)
+    }
+
+    private func journal(_ meeting: Meeting) throws -> [TranscriptLine] {
+        try TranscriptJournal.read(#require(store.transcriptURL(for: meeting.id)))
+    }
+
+    // MARK: Rules
+
+    @Test func wakeRule() {
+        #expect(WakePolicy.decision(sleptFor: 14 * 60) == .resume)
+        #expect(WakePolicy.decision(sleptFor: 15 * 60) == .resume)
+        #expect(WakePolicy.decision(sleptFor: 15 * 60 + 1) == .ask)
+    }
+
+    // `#expect` can't call a mutating method, so the offers are worked out
+    // before it.
+
+    @Test func offersAfterTenQuietMinutesOnce() {
+        var d = MeetingEndDetector(startedAt: 0); d.heardSound(at: 100)
+        let offers = [699, 700, 701].map { d.shouldOffer(at: $0, appRunning: true) }
+        #expect(offers == [false, true, false])
+    }
+
+    @Test func offersWhenMeetingAppQuits() {
+        var d = MeetingEndDetector(startedAt: 0)
+        let offer = d.shouldOffer(at: 5, appRunning: false)
+        #expect(offer)
+    }
+
+    @Test func declineWaitsAnotherTenMinutes() {
+        var d = MeetingEndDetector(startedAt: 0); d.heardSound(at: 100)
+        let offered = d.shouldOffer(at: 700, appRunning: true)
+        d.declined(at: 700)
+        let offers = [1299, 1300].map { d.shouldOffer(at: $0, appRunning: true) }
+        #expect(offered)
+        #expect(offers == [false, true])
+    }
+
+    @Test func soundRestartsTheQuietClock() {
+        var d = MeetingEndDetector(startedAt: 0); d.heardSound(at: 100)
+        d.heardSound(at: 650)
+        let offers = [700, 1250].map { d.shouldOffer(at: $0, appRunning: true) }
+        #expect(offers == [false, true])
+    }
+
+    /// An app that's still gone after "Tetap merekam" isn't offered again;
+    /// one that quits again after coming back is.
+    @Test func appQuitIsOfferedOncePerQuit() {
+        var d = MeetingEndDetector(startedAt: 0)
+        let offered = d.shouldOffer(at: 5, appRunning: false)
+        d.declined(at: 5)
+        let running: [(at: TimeInterval, running: Bool)] = [(15, false), (25, true), (35, false)]
+        let offers = running.map { d.shouldOffer(at: $0.at, appRunning: $0.running) }
+        #expect(offered)
+        #expect(offers == [false, false, true])
+    }
+
+    @Test func sleepCopy() {
+        #expect(MeetingTime.duration(45) == "45 detik")
+        #expect(MeetingTime.duration(12 * 60) == "12 menit")
+        #expect(MeetingTime.duration(12 * 60 + 20) == "12 menit")
+        #expect(MeetingTime.duration(80 * 60) == "1 jam 20 menit")
+        #expect(MeetingTime.duration(2 * 3600) == "2 jam")
+        #expect(MeetingNotice.resumedAfterSleep(720).message == "Rekaman dilanjutkan setelah Mac tidur 12 menit.")
+        #expect(LiveMeetingView.wakeQuestion(sleptFor: 80 * 60, title: "Weekly Sync")
+            == "Mac tidur selama 1 jam 20 menit. Lanjutkan merekam “Weekly Sync” atau Selesaikan?")
+        #expect(LiveMeetingView.finishOffer == "Meeting sepertinya sudah selesai. Selesaikan rekaman?")
+    }
+
+    // MARK: PowerGuard
+
+    @Test func powerGuardKeepsTheMacAwakeAndReportsSleepAndWake() async {
+        let center = NotificationCenter()
+        let power = PowerGuard(notificationCenter: center)
+        power.onWillSleep = { [unowned self] in powerEvents.append("sleep") }
+        power.onDidWake = { [unowned self] in powerEvents.append("wake") }
+
+        power.begin()
+        #expect(power.preventsSleep)
+        #expect(ownAssertionNames().contains("Notulen sedang merekam"))
+        center.post(name: NSWorkspace.willSleepNotification, object: nil)
+        #expect(await waitUntil { powerEvents == ["sleep"] })
+        // The Mac sleeps anyway; recording again takes the assertion again.
+        #expect(!power.preventsSleep)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        #expect(await waitUntil { powerEvents == ["sleep", "wake"] })
+        power.begin()
+        #expect(power.preventsSleep)
+
+        // Other suites' sessions may hold an assertion of the same name now,
+        // so only this guard's own state is checked.
+        power.end()
+        #expect(!power.preventsSleep)
+        center.post(name: NSWorkspace.willSleepNotification, object: nil)
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(powerEvents == ["sleep", "wake"])
+    }
+
+    /// Names of the power assertions this process holds.
+    private func ownAssertionNames() -> [String] {
+        var byProcess: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsByProcess(&byProcess) == kIOReturnSuccess,
+              let all = byProcess?.takeRetainedValue() as? [NSNumber: [[String: Any]]]
+        else { return [] }
+        return all[NSNumber(value: getpid())]?.compactMap { $0[kIOPMAssertionNameKey] as? String } ?? []
+    }
+
+    // MARK: Sleep and wake
+
+    /// Up to 15 minutes: recording goes on by itself in the same journal,
+    /// with the sleep as a gap and new audio in a new buffer segment.
+    @Test func shortSleepResumesOnItsOwn() async throws {
+        let buffer = MeetingAudioBuffer()
+        let session = makeSession(FakeSpeech(meeting: [.final("Halo", 1, 2)]), audioBuffer: { buffer })
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        meetingCapture.send()
+        #expect(await waitUntil { session.transcript.lines.count == 1 })
+        clock.advance(60)
+
+        session.handleWillSleep()
+        #expect(!meetingCapture.isCapturing && !micCapture.isCapturing)
+        #expect(session.phase == .recording)
+        clock.advance(12 * 60)
+        await session.handleDidWake()
+
+        #expect(session.wakeQuestion == nil)
+        let gaps = [Gap(span: .init(start: 60, end: 780), reason: .sleep)]
+        #expect(session.meeting?.gaps == gaps)
+        let saved = makeStore().meetings.first
+        #expect(saved?.status == .recording && saved?.gaps == gaps)
+        #expect(session.notices == [.resumedAfterSleep(720)])
+        #expect(await waitUntil { meetingCapture.isCapturing && micCapture.isCapturing })
+        // Nothing writes to the buffer until the next chunk arrives.
+        let recorded = Double(buffer.sampleCount) / MeetingAudioBuffer.sampleRate
+        #expect(buffer.meetingTime(ofBufferTime: recorded) == 780)
+
+        meetingCapture.send()
+        #expect(await waitUntil { session.transcript.lines.count == 2 })
+        let stopped = try #require(await session.stop())
+        #expect(try journal(stopped).map(\.start) == [1, 781])
+        #expect(stopped.status == .ready)
+    }
+
+    /// Over 15 minutes: nothing records until the owner answers, and the
+    /// sleep gap ends at the answer.
+    @Test func longSleepAsksFirst() async throws {
+        let session = makeSession()
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        clock.advance(60)
+        session.handleWillSleep()
+        clock.advance(80 * 60)
+        await session.handleDidWake()
+
+        #expect(session.wakeQuestion == 80.0 * 60)
+        // Nothing is checked meanwhile: no silence warning, no offer.
+        session.checkMeeting()
+        #expect(!session.offersFinish)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!meetingCapture.isCapturing && !micCapture.isCapturing)
+        #expect(session.meeting?.gaps == [])
+        #expect(session.notices.isEmpty)
+
+        clock.advance(30)
+        await session.answerWake(continueRecording: true)
+        #expect(session.wakeQuestion == nil)
+        #expect(session.meeting?.gaps == [Gap(span: .init(start: 60, end: 4_890), reason: .sleep)])
+        #expect(await waitUntil { meetingCapture.isCapturing && micCapture.isCapturing })
+        #expect(session.notices.isEmpty)
+        _ = await session.stop()
+    }
+
+    /// "Selesaikan" doesn't stretch the meeting over the night: it ends where
+    /// recording stopped.
+    @Test func finishingAfterALongSleepEndsWhereRecordingStopped() async throws {
+        let session = makeSession(FakeSpeech(meeting: [.final("Halo", 1, 2)]))
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        let startedAt = try #require(session.meeting?.startedAt)
+        meetingCapture.send()
+        #expect(await waitUntil { session.transcript.lines.count == 1 })
+        clock.advance(60)
+        session.handleWillSleep()
+        clock.advance(14 * 3600)
+        await session.handleDidWake()
+        #expect(session.wakeQuestion != nil)
+
+        await session.answerWake(continueRecording: false)
+        #expect(session.phase == .idle && session.wakeQuestion == nil)
+        #expect(!meetingCapture.isCapturing && !micCapture.isCapturing)
+        let saved = try #require(makeStore().meetings.first)
+        #expect(saved.status == .ready)
+        #expect(saved.endedAt == startedAt.addingTimeInterval(60))
+        #expect(saved.gaps.isEmpty)
+        #expect(try journal(saved).map(\.text) == ["Halo"])
+    }
+
+    /// Two wake reports while capture is still draining from the sleep
+    /// restart it once.
+    @Test func repeatedWakeRestartsCaptureOnce() async throws {
+        let session = makeSession(FakeSpeech(startDelay: .milliseconds(200)))
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        session.handleWillSleep()
+        clock.advance(60)
+        async let first: Void = session.handleDidWake()
+        async let second: Void = session.handleDidWake()
+        _ = await (first, second)
+
+        #expect(await waitUntil { meetingCapture.isCapturing && micCapture.isCapturing })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(deviceRequests == 2)
+        #expect(session.meeting?.gaps.count == 1)
+        _ = await session.stop()
+    }
+
+    /// The system's sleep and wake reach the session through its `PowerGuard`.
+    @Test func sleepAndWakeNotificationsReachTheSession() async throws {
+        let center = NotificationCenter()
+        let session = makeSession(power: PowerGuard(notificationCenter: center))
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        clock.advance(60)
+        center.post(name: NSWorkspace.willSleepNotification, object: nil)
+        #expect(await waitUntil { !meetingCapture.isCapturing && !micCapture.isCapturing })
+        clock.advance(60)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        #expect(await waitUntil { meetingCapture.isCapturing && micCapture.isCapturing })
+        #expect(session.meeting?.gaps == [Gap(span: .init(start: 60, end: 120), reason: .sleep)])
+        _ = await session.stop()
+    }
+
+    // MARK: Meeting ended?
+
+    @Test func offersToFinishWhenTheMeetingAppQuits() async throws {
+        let session = makeSession()
+        try session.begin(MeetingSession.Configuration(
+            title: "Weekly sync", audioSource: .app(bundleID: "us.zoom.xos", name: "Zoom"),
+            locale: Locale(identifier: "id-ID"), vocabulary: []))
+        #expect(await waitUntil { session.phase == .recording })
+        session.checkMeeting()
+        #expect(!session.offersFinish)
+        appIsRunning = false
+        session.checkMeeting()
+        #expect(session.offersFinish)
+
+        clock.advance(30)
+        session.declineFinishOffer()
+        #expect(!session.offersFinish)
+        session.checkMeeting()
+        #expect(!session.offersFinish)
+        clock.advance(MeetingEndDetector.silenceLimit)
+        session.checkMeeting()
+        #expect(session.offersFinish)
+        // The offer never stops the recording itself.
+        #expect(session.phase == .recording && meetingCapture.isCapturing)
+        _ = await session.stop()
+        #expect(!session.offersFinish)
+    }
+
+    /// System-wide audio has no app to quit; ten quiet minutes count from
+    /// the last sound.
+    @Test func quietMeetingAudioOffersToFinish() async throws {
+        appIsRunning = false
+        let session = makeSession()
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        clock.advance(30)
+        session.checkMeeting()
+        #expect(!session.offersFinish)
+        #expect(session.notices == [.silent])
+
+        clock.advance(270)
+        meetingCapture.send()
+        // The silence notice goes once the session heard the sound, at 300.
+        #expect(await waitUntil { session.notices.isEmpty })
+        clock.advance(599)
+        session.checkMeeting()
+        #expect(!session.offersFinish)
+        clock.advance(1)
+        session.checkMeeting()
+        #expect(session.offersFinish)
+        _ = await session.stop()
+    }
+}
