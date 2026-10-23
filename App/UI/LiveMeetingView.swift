@@ -13,20 +13,18 @@ struct LiveMeetingView: View {
     @Environment(\.textScale) private var scale
     /// The transcript inspector; the menu's Tampilkan Transkrip (⌥⌘T) too.
     @ViewState private var showsTranscript = false
-    /// The notes area's width, for `sidePadding(forWidth:)`.
-    @ViewState private var notesWidth = CGFloat.infinity
 
     static let finishOffer = "Meeting sepertinya sudah selesai. Selesaikan rekaman?"
 
     /// The notes read at most this wide.
-    static let columnWidth: CGFloat = 620
+    nonisolated static let columnWidth: CGFloat = 620
     /// Below this the column gives up its wide margins.
-    static let narrowColumn: CGFloat = 480
+    nonisolated static let narrowColumn: CGFloat = 480
 
     /// Room on each side of the column: 40 pt, or 16 pt where 40 would leave
     /// the column narrower than `narrowColumn`, as with the sidebar and the
     /// transcript both open in a small window.
-    static func sidePadding(forWidth width: CGFloat) -> CGFloat {
+    nonisolated static func sidePadding(forWidth width: CGFloat) -> CGFloat {
         width - 2 * 40 < narrowColumn ? 16 : 40
     }
 
@@ -82,24 +80,22 @@ struct LiveMeetingView: View {
     /// One reading column, centered: where the audio comes from, then the notes.
     private var notes: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if let meta {
-                    Text(meta)
-                        .font(.scaled(.callout, scale))
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 26 * scale)
+            ReadingColumn {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let meta {
+                        Text(meta)
+                            .font(.scaled(.callout, scale))
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 26 * scale)
+                    }
+                    LiveNotesView(
+                        notes: session.meeting?.liveNotes, updatedAt: session.meeting?.liveNotesUpdatedAt,
+                        problem: notesProblem)
                 }
-                LiveNotesView(
-                    notes: session.meeting?.liveNotes, updatedAt: session.meeting?.liveNotesUpdatedAt,
-                    problem: notesProblem)
             }
-            .frame(maxWidth: Self.columnWidth, alignment: .leading)
-            .padding(.horizontal, sidePadding)
             .padding(.top, 30)
             .padding(.bottom, 40)
-            .frame(maxWidth: .infinity)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { notesWidth = $0 }
         .safeAreaInset(edge: .top, spacing: 0) { banners }
         .safeAreaInset(edge: .bottom, spacing: 0) { LiveStrip() }
         .textScalePinch(textScale)
@@ -108,29 +104,24 @@ struct LiveMeetingView: View {
 
     /// What the start is doing, then the notices; as wide as the column.
     private var banners: some View {
-        VStack(spacing: 0) {
-            if let status = session.startupStatus {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(status)
+        ReadingColumn {
+            VStack(spacing: 0) {
+                if let status = session.startupStatus {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(status)
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 14)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                    .padding(.top, 8)
                 }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 10)
-                .padding(.horizontal, 14)
-                .glassEffect(.regular, in: .rect(cornerRadius: 12))
-                .padding(.top, 8)
+                NoticeBanner(notices: session.notices)
             }
-            NoticeBanner(notices: session.notices)
         }
-        .frame(maxWidth: Self.columnWidth)
-        .padding(.horizontal, sidePadding)
-        .frame(maxWidth: .infinity)
-    }
-
-    private var sidePadding: CGFloat {
-        Self.sidePadding(forWidth: notesWidth)
     }
 
     @ToolbarContentBuilder
@@ -221,6 +212,46 @@ struct LiveMeetingView: View {
         case .idle:
             EmptyView()
         }
+    }
+}
+
+/// One reading column, centered in the width it's offered: at most
+/// `LiveMeetingView.columnWidth` wide, with
+/// `LiveMeetingView.sidePadding(forWidth:)` on each side, its content
+/// leading. The margins come from the offered width, never a measured one:
+/// a measured width moved the view's minimum width with each layout, and
+/// the split view holding it laid it out again, at a passing narrow width,
+/// over and over until AppKit gave up.
+struct ReadingColumn: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let (padding, width) = Self.column(in: proposal.width)
+        let size = content.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+        let needed = size.width + 2 * padding
+        return CGSize(width: max(proposal.width ?? needed, needed), height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        let (_, width) = Self.column(in: bounds.width)
+        content.place(
+            at: CGPoint(x: bounds.midX - width / 2, y: bounds.minY), anchor: .topLeading,
+            proposal: ProposedViewSize(width: width, height: bounds.height))
+    }
+
+    /// The column is never measured narrower than this. SwiftUI asks for a
+    /// view's minimum size at no width, and wrapped text measured at nothing
+    /// is a character per line, 1500 pt tall: that became the minimum height
+    /// of the whole column, taller than the window. An 820 pt window with
+    /// the sidebar at 240 and the inspector at 360 leaves this much.
+    nonisolated static let narrowest: CGFloat = 220
+
+    /// The margin on each side and the column's width for an offered width;
+    /// with none offered, the widest column.
+    static func column(in offered: CGFloat?) -> (padding: CGFloat, width: CGFloat) {
+        let offered = max(offered ?? .infinity, narrowest)
+        let padding = LiveMeetingView.sidePadding(forWidth: offered)
+        return (padding, min(LiveMeetingView.columnWidth, offered - 2 * padding))
     }
 }
 

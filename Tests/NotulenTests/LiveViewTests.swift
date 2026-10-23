@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Notulen
 
@@ -60,6 +62,62 @@ struct LiveViewTests {
         #expect(LiveMeetingView.sidePadding(forWidth: 560) == 40)
         #expect(LiveMeetingView.sidePadding(forWidth: 559) == 16)
         #expect(LiveMeetingView.sidePadding(forWidth: 820 - 240 - 260) == 16)
+    }
+
+    @Test func columnIsAtMost620WideInsideItsMargins() {
+        #expect(ReadingColumn.column(in: 840) == (40, 620))
+        #expect(ReadingColumn.column(in: 600) == (40, 520))
+        #expect(ReadingColumn.column(in: 559) == (16, 527))
+        // Never measured narrower than the narrowest it can be shown: offered
+        // nothing, as when sized for its minimum, the content still gets 188.
+        #expect(ReadingColumn.column(in: 220) == (16, 188))
+        #expect(ReadingColumn.column(in: 100) == (16, 188))
+        #expect(ReadingColumn.column(in: 0) == (16, 188))
+        // Unbounded, as when sized for its ideal.
+        #expect(ReadingColumn.column(in: nil) == (40, 620))
+    }
+
+    /// A notice measured at no width wraps a character per line, 1500 pt
+    /// tall. That became the live view's minimum height; the split view
+    /// around it then overflowed the window and never settled.
+    @Test func columnKeepsWrappedTextShort() {
+        let controller = NSHostingController(rootView: ReadingColumn { NoticeBanner(notices: [.speakerOutput]) })
+        let minimum = controller.sizeThatFits(in: .zero)
+        #expect(minimum.height < 200, "minimum \(minimum)")
+        #expect(minimum.width <= 220, "minimum \(minimum)")
+    }
+
+    /// The margins follow the width the column is offered, not a width it
+    /// measured. A measured one fed back into the live view's minimum width,
+    /// so the split view laid it out again, at a passing narrow width, and
+    /// again, until AppKit gave up: the crash as a recording started.
+    @Test func minimumWidthDoesNotFollowTheLastLayout() async {
+        let root = FileManager.default.temporaryDirectory.appending(path: "LiveViewTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(files: JSONFileStore(directory: root), keychainPrefix: "test-\(UUID().uuidString)-")
+        let finisher = MeetingFinisher(store: store, diarizer: nil) { nil }
+        let session = MeetingSession(store: store, finisher: finisher)
+        let controller = NSHostingController(
+            rootView: LiveMeetingView().environment(store).environment(session).environment(finisher))
+        // Never shown on screen.
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 840, height: 600), styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentViewController = controller
+
+        func minimumWidth(laidOutAt width: CGFloat) async -> CGFloat {
+            window.setContentSize(NSSize(width: width, height: 600))
+            controller.view.layoutSubtreeIfNeeded()
+            // What the layout changed applies in the next transaction.
+            try? await Task.sleep(for: .milliseconds(100))
+            controller.view.layoutSubtreeIfNeeded()
+            return controller.sizeThatFits(in: CGSize(width: 0, height: 600)).width
+        }
+        let afterWide = await minimumWidth(laidOutAt: 840)
+        let afterNarrow = await minimumWidth(laidOutAt: 120)
+        #expect(afterWide == afterNarrow)
     }
 
     // MARK: Live strip

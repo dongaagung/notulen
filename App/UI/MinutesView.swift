@@ -39,8 +39,6 @@ struct MinutesView: View {
     @ViewState private var notion = NotionState.idle
     /// The journal has been read, so an empty `lines` means nothing was said.
     @ViewState private var linesLoaded = false
-    /// The page's width, for `LiveMeetingView.sidePadding(forWidth:)`.
-    @ViewState private var width = CGFloat.infinity
 
     enum NotionState: Equatable {
         case idle, sending(UUID), sent(UUID, String)
@@ -180,34 +178,32 @@ struct MinutesView: View {
 
     private var notesPage: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(Self.metaLine(meeting))
-                    .font(.scaled(.callout, scale))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                // Where the recording broke off, and the owner's mic was off.
-                if let pauses = TranscriptRows.summary(gaps: meeting.gaps, micOff: meeting.micOff) {
-                    Text(pauses)
-                        .font(.scaled(.subheadline, scale))
+            ReadingColumn {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(Self.metaLine(meeting))
+                        .font(.scaled(.callout, scale))
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                        .padding(.top, 3 * scale)
+                    // Where the recording broke off, and the owner's mic was off.
+                    if let pauses = TranscriptRows.summary(gaps: meeting.gaps, micOff: meeting.micOff) {
+                        Text(pauses)
+                            .font(.scaled(.subheadline, scale))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .padding(.top, 3 * scale)
+                    }
+                    titleField
+                        .padding(.top, 6 * scale)
+                        .padding(.bottom, 12 * scale)
+                    participants
+                        .padding(.bottom, 30 * scale)
+                    content
                 }
-                titleField
-                    .padding(.top, 6 * scale)
-                    .padding(.bottom, 12 * scale)
-                participants
-                    .padding(.bottom, 30 * scale)
-                content
             }
-            .frame(maxWidth: LiveMeetingView.columnWidth, alignment: .leading)
-            .padding(.horizontal, LiveMeetingView.sidePadding(forWidth: width))
             .padding(.top, 30)
             .padding(.bottom, 40)
-            .frame(maxWidth: .infinity)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .textScalePinch(textScale)
         .background { Color.canvas.ignoresSafeArea() }
     }
