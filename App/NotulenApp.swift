@@ -8,12 +8,14 @@ struct NotulenApp: App {
 
     private var store: AppStore { delegate.store }
     private var session: MeetingSession { delegate.session }
+    private var finisher: MeetingFinisher { delegate.finisher }
 
     var body: some Scene {
         WindowGroup("Notulen") {
             ContentView(showsNewMeeting: $showsNewMeeting)
                 .environment(store)
                 .environment(session)
+                .environment(finisher)
                 .environment(\.textScale, store.settings.textScale)
                 .frame(minWidth: 820, minHeight: 520)
         }
@@ -82,17 +84,21 @@ private struct TranscriptCommand: View {
     }
 }
 
-/// Owns the store and the session, so quitting can ask first while a
-/// meeting records.
+/// Owns the store, the finisher and the session, so quitting can ask first
+/// while a meeting records.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store: AppStore
+    let finisher: MeetingFinisher
     let session: MeetingSession
 
     override init() {
         let store = AppStore()
+        // Minutes a quit or crash cut off: Coba lagi writes them.
+        store.recoverUnfinishedMinutes()
         self.store = store
-        session = MeetingSession(store: store)
+        finisher = MeetingFinisher(store: store)
+        session = MeetingSession(store: store, finisher: finisher)
         super.init()
     }
 

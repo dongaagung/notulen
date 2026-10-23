@@ -4,10 +4,21 @@ import SwiftUI
 /// channel's in-progress words, faded, at the end. Opens at the latest line
 /// and follows new ones unless the owner scrolled up; scrolling back to the
 /// end follows again.
+///
+/// A finished meeting's transcript names speakers as the meeting does now,
+/// opens at the top, and scrolls to the line in `focus` and highlights it.
 struct TranscriptView: View {
     let transcript: Transcript
+    /// Set for a meeting that has ended.
+    var finished: Finished?
     @Environment(\.textScale) private var scale
     @ViewState private var followsEnd = true
+
+    struct Finished {
+        var meeting: Meeting
+        /// The line a time in the minutes points at.
+        var focus: TranscriptLine.ID?
+    }
 
     private struct ScrollState: Equatable {
         var offset: CGFloat
@@ -19,14 +30,26 @@ struct TranscriptView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if transcript.lines.isEmpty && transcript.volatileText.isEmpty {
-                        Text("Transkrip muncul di sini begitu ada yang bicara.")
+                        Text(finished == nil
+                            ? "Transkrip muncul di sini begitu ada yang bicara."
+                            : "Tidak ada percakapan yang terekam.")
                             .font(.scaled(.body, scale))
                             .foregroundStyle(.secondary)
                     }
                     ForEach(transcript.lines) { line in
-                        row(Self.label(line.speaker), isMe: line.speaker == .me, time: line.start) {
+                        let speaker = speaker(of: line)
+                        row(speaker.name, isMe: speaker.isMe, time: line.start) {
                             Text(line.text)
                         }
+                        .background {
+                            if line.id == finished?.focus {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(.tint.opacity(0.12))
+                                    .padding(.horizontal, -8)
+                                    .padding(.vertical, -5)
+                            }
+                        }
+                        .id(line.id)
                     }
                     ForEach([Channel.meeting, .mic], id: \.self) { channel in
                         if let text = transcript.volatileText[channel] {
@@ -38,7 +61,9 @@ struct TranscriptView: View {
                     Color.clear.frame(height: 1).id(Self.end)
                 }
                 .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // A finished meeting's fills the window: one reading column.
+                .frame(maxWidth: finished == nil ? .infinity : LiveMeetingView.columnWidth + 40, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
             .onScrollGeometryChange(for: ScrollState.self) { geometry in
                 ScrollState(
@@ -55,15 +80,27 @@ struct TranscriptView: View {
             }
             // Only where it starts: a fixed bottom anchor while the content
             // grows would move the lines the owner scrolled up to.
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .onAppear { proxy.scrollTo(Self.end, anchor: .bottom) }
+            .defaultScrollAnchor(finished == nil ? .bottom : .top, for: .initialOffset)
+            .onAppear {
+                if finished == nil { proxy.scrollTo(Self.end, anchor: .bottom) }
+            }
+            .task(id: finished?.focus) {
+                if let focus = finished?.focus { proxy.scrollTo(focus, anchor: .center) }
+            }
             .onChange(of: transcript) {
-                if followsEnd { proxy.scrollTo(Self.end, anchor: .bottom) }
+                if finished == nil, followsEnd { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
         }
     }
 
     private static let end = "end"
+
+    /// The meeting's name for who said it, else "Saya" or "Lainnya".
+    private func speaker(of line: TranscriptLine) -> (name: String, isMe: Bool) {
+        guard let meeting = finished?.meeting else { return (Self.label(line.speaker), line.speaker == .me) }
+        let speaker = meeting.speaker(of: line)
+        return (meeting.displayName(for: speaker), speaker == .me)
+    }
 
     /// "Saya", "Pembicara 2", or "Lainnya" before speakers are told apart.
     nonisolated static func label(_ speaker: SpeakerID) -> String {

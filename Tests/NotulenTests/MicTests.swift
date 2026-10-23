@@ -27,8 +27,10 @@ final class MicTests {
     private func makeSession(_ speech: FakeSpeech = FakeSpeech()) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: outputRoute)
         let clock = clock
+        // No AI: lines too short to be speech end ready without minutes.
         return MeetingSession(
-            store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { clock.now },
+            store: store, finisher: MeetingFinisher(store: store) { nil },
+            devices: { _ in devices }, speech: { _, _ in speech }, now: { clock.now },
             power: power)
     }
 

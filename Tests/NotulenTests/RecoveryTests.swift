@@ -26,8 +26,10 @@ final class RecoveryTests {
     ) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let now = startedAt.addingTimeInterval(300)
+        // No AI: lines too short to be speech end ready without minutes.
         return MeetingSession(
-            store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { now },
+            store: store, finisher: MeetingFinisher(store: store) { nil },
+            devices: { _ in devices }, speech: { _, _ in speech }, now: { now },
             audioBuffer: audioBuffer, power: power)
     }
 

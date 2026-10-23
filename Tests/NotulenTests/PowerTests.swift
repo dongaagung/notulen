@@ -42,8 +42,9 @@ final class PowerTests {
     ) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let clock = clock
+        // No AI: lines too short to be speech end ready without minutes.
         return MeetingSession(
-            store: store,
+            store: store, finisher: MeetingFinisher(store: store) { nil },
             devices: { [unowned self] _ in
                 deviceRequests += 1
                 return devices

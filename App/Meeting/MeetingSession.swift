@@ -9,7 +9,7 @@ import Synchronization
 /// audio is also kept in RAM (16 kHz mono) for speaker separation.
 /// Keeps the Mac from idle-sleeping meanwhile; if it sleeps anyway, capture
 /// stops and the sleep becomes a gap. Offers to finish once the meeting
-/// looks over.
+/// looks over. An ended meeting goes to the finisher for its minutes.
 @MainActor
 @Observable
 final class MeetingSession {
@@ -73,6 +73,8 @@ final class MeetingSession {
     nonisolated static let levelInterval = Duration.milliseconds(100)
 
     private let store: AppStore
+    /// Writes the minutes of each meeting that ends.
+    private let finisher: MeetingFinisher
     private let makeDevices: @MainActor (MeetingAudioSource) -> CaptureDevices
     private let makeSpeech: @Sendable (Locale, [String]) -> any SttProvider
     private let now: () -> Date
@@ -125,6 +127,7 @@ final class MeetingSession {
 
     init(
         store: AppStore,
+        finisher: MeetingFinisher,
         devices: @escaping @MainActor (MeetingAudioSource) -> CaptureDevices = CaptureDevices.live,
         speech: @escaping @Sendable (Locale, [String]) -> any SttProvider = {
             SpeechAnalyzerProvider(locale: $0, vocabulary: $1)
@@ -137,6 +140,7 @@ final class MeetingSession {
         power: PowerGuard = PowerGuard()
     ) {
         self.store = store
+        self.finisher = finisher
         self.makeDevices = devices
         self.makeSpeech = speech
         self.now = now
@@ -201,15 +205,17 @@ final class MeetingSession {
         startTask = Task { await start(configuration, resumedAfter: gap) }
     }
 
-    /// Ends a meeting a crash or quit cut off, where its recording stopped.
-    /// Task 17 routes it to the finisher.
+    /// Ends a meeting a crash or quit cut off, where its recording stopped,
+    /// and returns once the finisher has written its minutes. Its audio went
+    /// with the app.
     func finishInterrupted(_ meeting: Meeting) async {
         guard meeting.id != self.meeting?.id || phase == .idle else { return }
         var meeting = meeting
         let lines = (try? store.transcriptLines(for: meeting.id)) ?? []
         meeting.endedAt = meeting.startedAt.addingTimeInterval(meeting.recordedUntil(lines))
-        meeting.status = .ready
+        meeting.status = .processing
         store.save(meeting)
+        await finisher.finish(meeting.id, audio: nil)
     }
 
     /// Starts over with `meeting`, whose final lines go to `journal`.
@@ -290,21 +296,27 @@ final class MeetingSession {
         startMonitoring()
     }
 
-    /// Stops capture, waits up to 3 s for the last lines, and closes the
-    /// meeting. Nil unless a meeting is recording.
+    /// Stops capture, waits up to 3 s for the last lines, and ends the
+    /// meeting: it's processing while the finisher writes its minutes, with
+    /// the meeting audio handed over. The session is idle meanwhile. Returns
+    /// the meeting as finished; nil unless a meeting is recording.
     func stop() async -> Meeting? {
-        await endRecording(as: .ready)
+        guard let (meeting, audio) = await endRecording(as: .processing) else { return nil }
+        await finisher.finish(meeting.id, audio: audio)
+        return store.meeting(meeting.id) ?? meeting
     }
 
     /// Stops recording without ending the meeting, as when the owner quits:
     /// it's saved as interrupted, to resume or finish at the next launch.
     func interrupt() async {
-        _ = await endRecording(as: .interrupted)
+        // Speakers can't be told apart from part of the meeting's audio.
+        await endRecording(as: .interrupted)?.audio.wipe()
     }
 
     /// Stops capture, waits up to 3 s for the last lines, then saves the
-    /// meeting as `status` and lets go of its journal and audio.
-    private func endRecording(as status: MeetingStatus) async -> Meeting? {
+    /// meeting as `status` and lets go of its journal. Returns the meeting
+    /// and its audio, which the session no longer holds.
+    private func endRecording(as status: MeetingStatus) async -> (meeting: Meeting, audio: MeetingAudioBuffer)? {
         guard phase == .recording else { return nil }
         phase = .stopping
         wakeQuestion = nil
@@ -330,10 +342,14 @@ final class MeetingSession {
         liveNotes = nil
         notices.removeAll { $0 == .liveNotesDelayed }
         power.end()
-        // Task 17 hands the buffer to the finisher instead.
-        meetingAudio.wipe()
+        let audio = meetingAudio
+        meetingAudio = MeetingAudioBuffer()
         phase = .idle
-        return meeting
+        guard let meeting else {
+            audio.wipe()
+            return nil
+        }
+        return (meeting, audio)
     }
 
     /// Stops capture and the work around it at once; `drainCapture()` then

@@ -50,6 +50,10 @@ final class AppStore {
 
     // MARK: Meetings
 
+    func meeting(_ id: UUID) -> Meeting? {
+        meetings.first { $0.id == id }
+    }
+
     func save(_ meeting: Meeting) {
         persist(meeting, to: Self.meetingPath(meeting.id))
         if let index = meetings.firstIndex(where: { $0.id == meeting.id }) {
@@ -159,6 +163,19 @@ final class AppStore {
         }
         return meetings.filter { $0.status == .interrupted }
     }
+
+    /// Minutes still being written when the app quit or crashed never will
+    /// be: those meetings become failed (saved), so Coba lagi writes them.
+    /// Call at launch only: later, a processing meeting is being finished now.
+    func recoverUnfinishedMinutes() {
+        for var meeting in meetings where meeting.status == .processing {
+            meeting.status = .failed
+            meeting.failure = Self.minutesCutOff
+            save(meeting)
+        }
+    }
+
+    static let minutesCutOff = "Pembuatan notulen terhenti. Coba lagi."
 
     private static let meetingFile = "meeting.json"
     private static let transcriptFile = "transcript.jsonl"

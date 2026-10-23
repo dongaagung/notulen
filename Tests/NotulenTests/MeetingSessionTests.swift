@@ -28,8 +28,10 @@ final class MeetingSessionTests {
     ) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture, output: FakeOutputRoute())
         let clock = Date(timeIntervalSince1970: 1_800_000_000)
+        // No AI: lines too short to be speech end ready without minutes.
         return MeetingSession(
-            store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { clock },
+            store: store, finisher: MeetingFinisher(store: store) { nil },
+            devices: { _ in devices }, speech: { _, _ in speech }, now: { clock },
             audioBuffer: audioBuffer, power: power)
     }
 

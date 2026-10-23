@@ -1,16 +1,20 @@
 import SwiftUI
 
-/// Meetings, newest first. The one recording has a red dot.
+/// Meetings, newest first. The one recording has a red dot; one whose
+/// minutes are being written, a spinner.
 struct MeetingSidebar: View {
     @Environment(AppStore.self) private var store
     @Environment(MeetingSession.self) private var session
+    @Environment(MeetingFinisher.self) private var finisher
     @Binding var selection: Meeting.ID?
     let onNewMeeting: () -> Void
 
     var body: some View {
         List(selection: $selection) {
             ForEach(store.meetings) { meeting in
-                MeetingRow(meeting: meeting, isRecording: isRecording(meeting))
+                MeetingRow(
+                    meeting: meeting, isRecording: isRecording(meeting),
+                    isProcessing: finisher.running[meeting.id] != nil)
                     .tag(meeting.id)
             }
         }
@@ -39,6 +43,7 @@ struct MeetingSidebar: View {
 private struct MeetingRow: View {
     let meeting: Meeting
     let isRecording: Bool
+    let isProcessing: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -56,6 +61,10 @@ private struct MeetingRow: View {
                     .fill(.red)
                     .frame(width: 7, height: 7)
                     .help("Sedang merekam")
+            } else if isProcessing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help("Membuat notulen…")
             }
         }
         .padding(.vertical, 2)
