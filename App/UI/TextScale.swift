@@ -14,6 +14,41 @@ enum TextScale {
     static func smaller(than scale: Double) -> Double {
         steps.last { $0 < scale - 0.001 } ?? steps.first!
     }
+
+    /// The size a trackpad pinch that has reached `magnification` (1 at its
+    /// start) asks for, or nil while it stays within 10% of where it started.
+    static func pinched(_ scale: Double, magnification: CGFloat) -> Double? {
+        if magnification > 1.1 { return bigger(than: scale) }
+        if magnification < 0.9 { return smaller(than: scale) }
+        return nil
+    }
+}
+
+extension View {
+    /// Pinching on the trackpad makes the text one step bigger or smaller,
+    /// one step per gesture.
+    func textScalePinch(_ scale: Binding<Double>) -> some View {
+        modifier(TextScalePinch(scale: scale))
+    }
+}
+
+private struct TextScalePinch: ViewModifier {
+    @Binding var scale: Double
+    /// This pinch already took its step.
+    @ViewState private var stepped = false
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
+            MagnifyGesture()
+                .onChanged { value in
+                    guard !stepped, let next = TextScale.pinched(scale, magnification: value.magnification) else {
+                        return
+                    }
+                    stepped = true
+                    scale = next
+                }
+                .onEnded { _ in stepped = false })
+    }
 }
 
 // `@Entry` would be shorter, but it's a macro whose plugin needs Xcode.

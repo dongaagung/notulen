@@ -15,6 +15,8 @@ protocol MicCapturing: AudioCapturing {
     static func requestPermission() async -> Bool
     /// Called with the input device's name after the mic moved to another device.
     var onDeviceChange: (@MainActor (String) -> Void)? { get set }
+    /// The name of the input device the mic last opened; nil before it has.
+    var deviceName: String? { get }
     /// Lets go of the mic, so the menu bar's mic indicator goes away. The
     /// stream stays open.
     func pause()

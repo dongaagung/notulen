@@ -56,6 +56,20 @@ final class MeetingSessionTests {
         #expect(lines.map(\.start) == [1, 3] && lines.map(\.end) == [2, 4])
     }
 
+    /// The level meter follows the meeting audio and drops to 0 once it stops.
+    @Test func levelFollowsTheMeetingAudio() async throws {
+        let session = makeSession()
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        #expect(session.level == 0)
+        meetingCapture.send()
+        #expect(await waitUntil { session.level > 0 })
+        // `.audible` is a constant 0.1.
+        #expect(abs(session.level - 0.1) < 0.0001)
+        _ = await session.stop()
+        #expect(session.level == 0)
+    }
+
     @Test func noLiveNotesWithoutAIProvider() async throws {
         let session = makeSession()
         try session.begin(config)

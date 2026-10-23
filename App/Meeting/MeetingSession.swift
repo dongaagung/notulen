@@ -54,6 +54,11 @@ final class MeetingSession {
     private(set) var liveNotes: LiveNotesUpdater?
     /// The meeting looks over: offer to finish it. Recording goes on.
     private(set) var offersFinish = false
+    /// The meeting audio's loudest sample over the last tenth of a second,
+    /// from 0 to 1, for the level meter. 0 while it isn't captured.
+    private(set) var level: Float = 0
+    /// The input device the mic records from, once known.
+    private(set) var micName: String?
     /// When the owner had the mic off. The meeting audio records on meanwhile.
     private var micOff = MicOffTracker()
 
@@ -64,6 +69,8 @@ final class MeetingSession {
 
     /// Meeting audio still silent this long after capture starts raises `.silent`.
     static let silenceDelay: TimeInterval = 20
+    /// How often `level` changes at most.
+    nonisolated static let levelInterval = Duration.milliseconds(100)
 
     private let store: AppStore
     private let makeDevices: @MainActor (MeetingAudioSource) -> CaptureDevices
@@ -217,6 +224,7 @@ final class MeetingSession {
         offsets = [:]
         micOff = MicOffTracker(spans: meeting.micOff)
         micOnFailure = nil
+        micName = nil
         meetingAudio = makeAudioBuffer()
         capturesMeeting = false
         heardMeeting = false
@@ -397,6 +405,7 @@ final class MeetingSession {
         devices = nil
         micSpeech = nil
         micFeed = nil
+        level = 0
     }
 
     // MARK: Pipeline
@@ -441,6 +450,7 @@ final class MeetingSession {
     private func startMic() throws {
         guard let devices, let micSpeech else { return }
         let capture = try devices.mic.start()
+        micName = devices.mic.deviceName ?? micName
         let feed = MicSpeechFeed()
         // Before the relay runs, so its first chunks have a stream to go to.
         let audio = feed.next()
@@ -486,8 +496,9 @@ final class MeetingSession {
 
     /// Passes the meeting audio on to speech without dropping any, and keeps
     /// a 16 kHz mono copy in `buffer`, off the main actor. Notes, at most
-    /// every 2 s, that the meeting isn't silent. Reports once if the copy
-    /// fails or reaches the buffer's cap.
+    /// every 2 s, that the meeting isn't silent, and sets `level` at most
+    /// every `levelInterval`. Reports once if the copy fails or reaches the
+    /// buffer's cap.
     private func tee(_ audio: AsyncStream<AudioChunk>, into buffer: MeetingAudioBuffer) -> AsyncStream<AudioChunk> {
         let (stream, continuation) = AsyncStream.makeStream(of: AudioChunk.self)
         relays.append(Task.detached { [weak self] in
@@ -495,6 +506,9 @@ final class MeetingSession {
             var lastHeard = ContinuousClock.now - .seconds(10)
             var isFull = false
             var conversionFailed = false
+            // The loudest sample since `level` was last set.
+            var loudest: Float = 0
+            var levelSetAt = ContinuousClock.now - MeetingSession.levelInterval
             for await chunk in audio {
                 continuation.yield(chunk)
                 if !isFull {
@@ -510,10 +524,17 @@ final class MeetingSession {
                         }
                     }
                 }
-                if chunk.buffer.peakLevel > AVAudioPCMBuffer.silenceThreshold,
-                   ContinuousClock.now - lastHeard > .seconds(2) {
+                let peak = chunk.buffer.peakLevel
+                if peak > AVAudioPCMBuffer.silenceThreshold, ContinuousClock.now - lastHeard > .seconds(2) {
                     lastHeard = .now
                     Task { @MainActor [weak self] in self?.heardMeetingAudio() }
+                }
+                loudest = max(loudest, peak)
+                if ContinuousClock.now - levelSetAt >= MeetingSession.levelInterval {
+                    levelSetAt = .now
+                    let level = loudest
+                    loudest = 0
+                    Task { @MainActor [weak self] in self?.show(level: level) }
                 }
             }
             continuation.finish()
@@ -748,6 +769,12 @@ final class MeetingSession {
         post(.silent)
     }
 
+    /// Not from a capture that has stopped: its last chunks can come late.
+    private func show(level: Float) {
+        guard devices != nil, level != self.level else { return }
+        self.level = level
+    }
+
     private func heardMeetingAudio() {
         heardMeeting = true
         notices.removeAll { $0 == .silent }
@@ -758,6 +785,7 @@ final class MeetingSession {
 
     /// Only the latest move is worth showing.
     private func micDeviceChanged(to name: String) {
+        micName = name
         notices.removeAll { if case .micChanged = $0 { true } else { false } }
         post(.micChanged(name))
     }

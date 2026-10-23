@@ -41,6 +41,8 @@ struct NotulenApp: App {
                 }
                 .keyboardShortcut("0", modifiers: .command)
                 Divider()
+                TranscriptCommand()
+                Divider()
             }
         }
 
@@ -63,6 +65,20 @@ private struct MicCommand: View {
         }
         .keyboardShortcut("m", modifiers: [.command, .shift])
         .disabled(session.phase != .recording)
+    }
+}
+
+/// Tampilkan Transkrip / Sembunyikan Transkrip (⌥⌘T): the live view's
+/// transcript inspector, in the window in front.
+private struct TranscriptCommand: View {
+    @FocusedBinding(\.showsTranscript) private var showsTranscript
+
+    var body: some View {
+        Button(showsTranscript == true ? "Sembunyikan Transkrip" : "Tampilkan Transkrip") {
+            showsTranscript?.toggle()
+        }
+        .keyboardShortcut("t", modifiers: [.command, .option])
+        .disabled(showsTranscript == nil)
     }
 }
 

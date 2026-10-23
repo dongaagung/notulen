@@ -16,6 +16,7 @@ final class FakeCapture: MicCapturing {
     /// Thrown by `resume()`, to fake a mic that can't come back on.
     var resumeError: (any Error)?
     var onDeviceChange: (@MainActor (String) -> Void)?
+    var deviceName: String?
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private var chunks: [AudioChunk]
@@ -62,6 +63,7 @@ final class FakeCapture: MicCapturing {
     /// Reports a move to the input device `name`, as the real mic does
     /// after restarting on a new headset.
     func changeDevice(to name: String) {
+        deviceName = name
         onDeviceChange?(name)
     }
 

@@ -27,6 +27,9 @@ final class MicCapture: MicCapturing {
     /// change failed. The mic stays silent until the next device change, or
     /// until it's turned off and on.
     var onRestartFailure: (@MainActor (any Error) -> Void)?
+    /// The name of the input device the mic last opened; nil before it has,
+    /// and again once stopped.
+    private(set) var deviceName: String?
 
     private let engine = AVAudioEngine()
     private var continuation: AsyncStream<AudioChunk>.Continuation?
@@ -82,6 +85,7 @@ final class MicCapture: MicCapturing {
         self.continuation = nil
         isPaused = false
         announcedDevice = .unknown
+        deviceName = nil
     }
 
     /// Stops the engine, so the menu bar's mic indicator goes away. The stream
@@ -135,6 +139,7 @@ final class MicCapture: MicCapturing {
             throw error
         }
         attachedDevice = device
+        deviceName = try? device.readString(kAudioObjectPropertyName)
     }
 
     /// Mono at the hardware's sample rate, or nil when the hardware has no
@@ -220,7 +225,6 @@ final class MicCapture: MicCapturing {
     private func announceDeviceIfChanged() {
         guard attachedDevice != announcedDevice else { return }
         announcedDevice = attachedDevice
-        let name = (try? attachedDevice.readString(kAudioObjectPropertyName)) ?? "mikrofon lain"
-        onDeviceChange?(name)
+        onDeviceChange?(deviceName ?? "mikrofon lain")
     }
 }

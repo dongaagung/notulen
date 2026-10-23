@@ -288,6 +288,18 @@ final class MicTests {
         _ = await session.stop()
     }
 
+    /// The live view's meta line names the mic, and follows it to a new device.
+    @Test func micNameFollowsTheInputDevice() async throws {
+        micCapture.deviceName = "MacBook Pro Microphone"
+        let session = makeSession()
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        #expect(session.micName == "MacBook Pro Microphone")
+        micCapture.changeDevice(to: "AirPods Pro")
+        #expect(session.micName == "AirPods Pro")
+        _ = await session.stop()
+    }
+
     /// Checked as recording starts and whenever the output route changes;
     /// shown only while the sound comes out of the Mac's speakers.
     @Test func speakerOutputIsShownWhileTheMeetingPlaysThroughTheMac() async throws {
