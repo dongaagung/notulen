@@ -8,6 +8,12 @@ enum MeetingNotice: Equatable, Identifiable {
     case silent
     case error(String)
 
+    /// The meeting audio kept for speaker separation reached its 4-hour cap.
+    static let speakerAudioFull = MeetingNotice.error(
+        "Batas 4 jam audio untuk pemisahan pembicara tercapai. Sisa meeting tetap ditranskripsi dan berlabel Lainnya.")
+    /// Meeting audio couldn't be converted for speaker separation.
+    static let speakerAudioFailed = MeetingNotice.error("Audio meeting untuk pemisahan pembicara gagal diproses.")
+
     var id: String {
         switch self {
         case .silent: "silent"

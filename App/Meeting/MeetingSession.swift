@@ -54,6 +54,7 @@ final class MeetingSession {
     private let makeDevices: @MainActor (MeetingAudioSource) -> CaptureDevices
     private let makeSpeech: @Sendable (Locale, [String]) -> any SttProvider
     private let now: () -> Date
+    private let makeAudioBuffer: () -> MeetingAudioBuffer
 
     private var devices: CaptureDevices?
     private var journal: TranscriptJournal?
@@ -64,8 +65,9 @@ final class MeetingSession {
     private var offsets: [Channel: TimeInterval] = [:]
     private var startTask: Task<Void, Never>?
     private var listeners: [Task<Void, Never>] = []
-    /// Copies the meeting audio into `meetingAudio`: its only writer.
-    private var teeTask: Task<Void, Never>?
+    /// Pass each channel's audio on to speech; the meeting's relay (the tee)
+    /// is also the only writer of `meetingAudio`.
+    private var relays: [Task<Void, Never>] = []
     private var monitorTask: Task<Void, Never>?
     private var capturesMeeting = false
     private var heardMeeting = false
@@ -76,12 +78,14 @@ final class MeetingSession {
         speech: @escaping @Sendable (Locale, [String]) -> any SttProvider = {
             SpeechAnalyzerProvider(locale: $0, vocabulary: $1)
         },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
     ) {
         self.store = store
         self.makeDevices = devices
         self.makeSpeech = speech
         self.now = now
+        self.makeAudioBuffer = audioBuffer
     }
 
     // MARK: Lifecycle
@@ -108,7 +112,7 @@ final class MeetingSession {
         transcript = Transcript()
         notices = []
         offsets = [:]
-        meetingAudio = MeetingAudioBuffer()
+        meetingAudio = makeAudioBuffer()
         capturesMeeting = false
         heardMeeting = false
         startupStatus = "Menyiapkan pengenalan suara…"
@@ -176,11 +180,11 @@ final class MeetingSession {
         monitorTask = nil
         stopCapture()
         await finishListeners(within: .seconds(3))
-        // The tee ends with the capture stream; nothing may write to the
+        // The relays end with the capture streams; nothing may write to the
         // buffer once it's wiped.
-        teeTask?.cancel()
-        await teeTask?.value
-        teeTask = nil
+        relays.forEach { $0.cancel() }
+        for relay in relays { await relay.value }
+        relays = []
         transcript.discardVolatile(.meeting)
         transcript.discardVolatile(.mic)
         meeting?.endedAt = now()
@@ -205,10 +209,10 @@ final class MeetingSession {
         phase = .idle
     }
 
-    /// Lets go of what a start set up. The tee only runs once recording, so
-    /// the buffer can be wiped here.
+    /// Lets go of what a start set up. The relays only run once recording,
+    /// so the buffer can be wiped here.
     private func discardCapture() {
-        assert(teeTask == nil)
+        assert(relays.isEmpty)
         stopCapture()
         listeners.forEach { $0.cancel() }
         listeners = []
@@ -246,7 +250,7 @@ final class MeetingSession {
         do {
             let stream = try devices.mic.start()
             offsets[.mic] = meetingTime
-            listen(to: stream, channel: .mic, with: speech)
+            listen(to: relay(stream), channel: .mic, with: speech)
         } catch {
             post(.error(error.localizedDescription))
         }
@@ -266,19 +270,50 @@ final class MeetingSession {
         }
     }
 
-    /// Passes the meeting audio on to speech and keeps a 16 kHz mono copy in
-    /// `buffer`, off the main actor. Notes, at most every 2 s, that the
-    /// meeting isn't silent.
+    // The recognizer reads nothing for a few seconds while its analyzer
+    // starts, and a capture keeps only its newest 128 chunks (about 1.4 s of
+    // tap audio). A chunk dropped then never reaches speech, so every later
+    // line of that channel would come out early, and meeting lines would no
+    // longer match `meetingAudio` for speaker separation. So the relays read
+    // the captures at once and hold whatever speech hasn't read yet, without
+    // a limit: about 384 KB per second of lag for 48 kHz stereo, and nothing
+    // once speech has stopped reading (its stream is gone then).
+
+    /// Passes the mic audio on to speech without dropping any.
+    private func relay(_ audio: AsyncStream<AudioChunk>) -> AsyncStream<AudioChunk> {
+        let (stream, continuation) = AsyncStream.makeStream(of: AudioChunk.self)
+        relays.append(Task.detached {
+            for await chunk in audio { continuation.yield(chunk) }
+            continuation.finish()
+        })
+        return stream
+    }
+
+    /// Passes the meeting audio on to speech without dropping any, and keeps
+    /// a 16 kHz mono copy in `buffer`, off the main actor. Notes, at most
+    /// every 2 s, that the meeting isn't silent. Reports once if the copy
+    /// fails or reaches the buffer's cap.
     private func tee(_ audio: AsyncStream<AudioChunk>, into buffer: MeetingAudioBuffer) -> AsyncStream<AudioChunk> {
-        let (stream, continuation) = AsyncStream.makeStream(
-            of: AudioChunk.self, bufferingPolicy: .bufferingNewest(128))
-        teeTask = Task.detached { [weak self] in
+        let (stream, continuation) = AsyncStream.makeStream(of: AudioChunk.self)
+        relays.append(Task.detached { [weak self] in
             var converter = AudioConverter(target: .mono16kInt16)
             var lastHeard = ContinuousClock.now - .seconds(10)
+            var isFull = false
+            var conversionFailed = false
             for await chunk in audio {
                 continuation.yield(chunk)
-                if let mono = try? converter.convert(chunk.buffer) {
-                    buffer.append(mono)
+                if !isFull {
+                    do {
+                        if !buffer.append(try converter.convert(chunk.buffer)) {
+                            isFull = true
+                            Task { @MainActor [weak self] in self?.post(.speakerAudioFull) }
+                        }
+                    } catch {
+                        if !conversionFailed {
+                            conversionFailed = true
+                            Task { @MainActor [weak self] in self?.post(.speakerAudioFailed) }
+                        }
+                    }
                 }
                 if chunk.buffer.peakLevel > AVAudioPCMBuffer.silenceThreshold,
                    ContinuousClock.now - lastHeard > .seconds(2) {
@@ -287,7 +322,7 @@ final class MeetingSession {
                 }
             }
             continuation.finish()
-        }
+        })
         return stream
     }
 

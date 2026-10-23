@@ -20,10 +20,15 @@ final class MeetingSessionTests {
 
     /// The clock stands still, so both channels start at meeting time 0 and a
     /// line's times are its span.
-    private func makeSession(_ speech: FakeSpeech = FakeSpeech()) -> MeetingSession {
+    private func makeSession(
+        _ speech: FakeSpeech = FakeSpeech(),
+        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
+    ) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture)
         let clock = Date(timeIntervalSince1970: 1_800_000_000)
-        return MeetingSession(store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { clock })
+        return MeetingSession(
+            store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { clock },
+            audioBuffer: audioBuffer)
     }
 
     private func journal(_ meeting: Meeting) throws -> [TranscriptLine] {
@@ -88,6 +93,40 @@ final class MeetingSessionTests {
         #expect(try journal(meeting).map(\.text) == [said, "Oke"])
     }
 
+    /// The recognizer reads nothing while its analyzer starts. A chunk
+    /// dropped then would make every later line of that channel early.
+    @Test func noAudioIsDroppedWhileTheRecognizerStarts() async throws {
+        let received = ReceivedAudio()
+        let session = makeSession(FakeSpeech(startDelay: .milliseconds(300), received: received))
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        // 300 chunks each, well over the captures' 128, sent in bursts the
+        // session's relays can keep up with, as with real capture callbacks.
+        for burst in 0..<15 {
+            for _ in 0..<20 {
+                meetingCapture.send(.audible(channels: 2, frames: 512))
+                micCapture.send(.audible(channels: 1, frames: 512))
+            }
+            if burst < 14 { try await Task.sleep(for: .milliseconds(2)) }
+        }
+        #expect(await waitUntil { received.count(.meeting) == 300 && received.count(.mic) == 300 })
+        _ = await session.stop()
+        #expect(received.count(.meeting) == 300)
+        #expect(received.count(.mic) == 300)
+    }
+
+    @Test func fullSpeakerAudioIsReportedOnce() async throws {
+        // 0.1 s at 48 kHz is ~1600 samples at 16 kHz: over this cap at once.
+        let session = makeSession(audioBuffer: { MeetingAudioBuffer(maxSamples: 1_000, chunkSamples: 1_000) })
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        meetingCapture.send()
+        meetingCapture.send()
+        #expect(await waitUntil { session.notices.contains(.speakerAudioFull) })
+        _ = await session.stop()
+        #expect(session.notices == [.speakerAudioFull])
+    }
+
     @Test func micKeepsRecordingWhenMeetingAudioFails() async throws {
         let failure = ProcessTapCapture.Failure.appNotRunning("Zoom")
         meetingCapture.startError = failure
@@ -126,6 +165,8 @@ final class MeetingSessionTests {
     @Test func noticeCopy() {
         #expect(MeetingNotice.silent.message.hasPrefix("Belum ada suara dari meeting."))
         #expect(MeetingNotice.error("Mic berhenti merekam.").message == "Mic berhenti merekam.")
+        #expect(MeetingNotice.speakerAudioFull.message == "Batas 4 jam audio untuk pemisahan pembicara tercapai. Sisa meeting tetap ditranskripsi dan berlabel Lainnya.")
+        #expect(MeetingNotice.speakerAudioFailed.message == "Audio meeting untuk pemisahan pembicara gagal diproses.")
         #expect(MeetingSession.StartError.alreadyRecording.localizedDescription
             == "Meeting lain masih direkam. Selesaikan dulu.")
     }

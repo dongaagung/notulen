@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Synchronization
 @testable import Notulen
 
 /// A capture channel that forwards the chunks it's given. Stands in for the
@@ -34,7 +35,9 @@ final class FakeCapture: MicCapturing {
 
     func start() throws -> AsyncStream<AudioChunk> {
         if let startError { throw startError }
-        let (stream, continuation) = AsyncStream.makeStream(of: AudioChunk.self)
+        // Like the real captures: the oldest chunks go once 128 wait unread.
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: AudioChunk.self, bufferingPolicy: .bufferingNewest(128))
         chunks.forEach { continuation.yield($0) }
         chunks = []
         self.continuation = continuation
@@ -78,17 +81,26 @@ extension AudioChunk {
 struct FakeSpeech: SttProvider {
     var meeting: [TranscriptUpdate] = []
     var mic: [TranscriptUpdate] = []
+    /// How long it takes before reading audio, like the real recognizer
+    /// setting up its analyzer.
+    var startDelay = Duration.zero
+    /// Counts every chunk read.
+    var received: ReceivedAudio?
 
     func prepare(progress: (@Sendable (Double) -> Void)?) async throws {}
 
     func transcribe(_ audio: AsyncStream<AudioChunk>) -> AsyncThrowingStream<TranscriptUpdate, any Error> {
-        let (meeting, mic) = (meeting, mic)
+        let (meeting, mic, startDelay, received) = (meeting, mic, startDelay, received)
         return AsyncThrowingStream { output in
             let task = Task {
+                if startDelay > .zero { try? await Task.sleep(for: startDelay) }
                 var heard = false
-                for await chunk in audio where !heard {
+                for await chunk in audio {
+                    let channel = chunk.buffer.format.channelCount > 1 ? Channel.meeting : .mic
+                    received?.add(channel)
+                    guard !heard else { continue }
                     heard = true
-                    for update in chunk.buffer.format.channelCount > 1 ? meeting : mic {
+                    for update in channel == .meeting ? meeting : mic {
                         output.yield(update)
                     }
                 }
@@ -96,6 +108,19 @@ struct FakeSpeech: SttProvider {
             }
             output.onTermination = { _ in task.cancel() }
         }
+    }
+}
+
+/// Chunks a `FakeSpeech` read, per channel.
+final class ReceivedAudio: Sendable {
+    private let counts = Mutex<[Channel: Int]>([:])
+
+    func add(_ channel: Channel) {
+        counts.withLock { $0[channel, default: 0] += 1 }
+    }
+
+    func count(_ channel: Channel) -> Int {
+        counts.withLock { $0[channel, default: 0] }
     }
 }
 
