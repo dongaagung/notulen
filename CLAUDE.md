@@ -11,30 +11,40 @@ it before changing behavior. UI mockups live in .superpowers/brainstorm/
 (gitignored, local only).
 
 ## Layout
-Planned, mirroring ../interview-assistant. Update this section when it changes.
+Update this section when it changes.
 - Package.swift (SwiftPM). Builds with Command Line Tools only, no Xcode.
   `make build` bundles + ad-hoc signs .build/Notulen.app.
 - App/Support: Info.plist (literal values, no $(VARS)), entitlements, icon
-- App/Audio: ProcessTapCapture (Core Audio tap; re-attaches when the output
-  device changes), MicCapture (AVAudioEngine; restarts on input device change;
-  mic on/off), MeetingAudioBuffer (meeting audio in RAM as 16 kHz mono Int16,
-  for diarization only)
+- App/Audio: AudioCapturing (protocol), ProcessTapCapture (Core Audio tap;
+  re-attaches when the output device changes), MicCapture (AVAudioEngine;
+  restarts on input device change; mic on/off), AudioConverter, AudioChunk,
+  AudioLevel, AudioProcess, CoreAudioObject, OutputRoute + OutputRouteMonitor,
+  MeetingAudioBuffer (meeting audio in RAM as 16 kHz mono Int16, for
+  diarization only)
 - App/Speech: SttProvider, SpeechAnalyzerProvider (SpeechTranscriber;
   DictationTranscriber for locales it lacks, e.g. id-ID; audioTimeRange per
   segment), custom vocabulary
 - App/Diarization: SpeakerDiarizer (FluidAudio OfflineDiarizerManager over an
-  in-memory AudioSampleSource; lines get the speaker with the most time overlap)
+  in-memory AudioSampleSource; lines get the speaker with the most time
+  overlap), DiarizationModels, SpeakerMatcher. Runs one at a time: concurrent
+  FluidAudio runs hang Core ML.
 - App/AI: LLMClient (purposes: liveNotes is fast; minutes and translation are
   smart), ClaudeClient, OpenAICompatibleClient, AIProvider, PromptTemplate,
-  LiveNotesUpdater, MinutesWriter, Translator
-- App/Meeting: MeetingSession (capture → transcript → live notes), TranscriptJournal
-  (append + fsync per final line), PowerGuard (no idle sleep while recording;
-  wake rules), crash recovery
-- App/Export: Markdown, PDF, Notion
-- App/UI: sidebar, live view, minutes, rename/merge speakers, settings
-- App/Store: Codable models, JSONFileStore, Keychain, AppSettings. JSON in
-  ~/Library/Application Support/rakyat.notulen/meetings/<id>/ (meeting.json +
-  transcript.jsonl). No SwiftData: @Model's macro plugin needs Xcode.
+  Schemas, JSONValue, TranscriptFormatter, LiveNotesUpdater, MinutesWriter,
+  Translator
+- App/Meeting: MeetingSession (capture → transcript → live notes),
+  MeetingFinisher (diarize → minutes), TranscriptJournal (append + fsync per
+  final line), PowerGuard + WakePolicy (no idle sleep while recording; wake
+  rules), MeetingEndDetector, MicOffTracker, Speakers, MeetingTime,
+  MeetingNotice, Transcript. Crash recovery.
+- App/Export: MinutesMarkdown, MinutesHTML + PDFExporter, NotionClient,
+  NotionBlocks, NotionPageID, MinutesFormatting
+- App/UI: sidebar, live view, processing, minutes, rename/merge speakers,
+  settings (general, AI, Notion, About), TextScale
+- App/Store: Codable models, JSONFileStore, Keychain, AppSettings, AppStore.
+  JSON in ~/Library/Application Support/rakyat.notulen/meetings/<id>/
+  (meeting.json + transcript.jsonl). No SwiftData: @Model's macro plugin needs
+  Xcode.
 - prompts/*.md: templates with {{variables}}, written in Indonesian. Don't
   rewrite unless asked.
 - Code from ../interview-assistant is copied in and adapted, never linked.
@@ -47,6 +57,8 @@ Planned, mirroring ../interview-assistant. Update this section when it changes.
 - No Xcode-only tools: no #Preview, no asset catalogs, no SwiftData macros, no
   @Entry. `@State` is a macro in the macOS 27 SDK: use `@ViewState` (same
   wrapper). SwiftPM runs with `--build-system native` (default backend needs Xcode).
+- `make build` can stall while VS Code's SwiftPM helpers hold the .build lock.
+  Don't kill other processes: wait, or close VS Code's Swift extension.
 - If `swift build` hangs at "Downloading binary artifact", add `--disable-keychain`.
 
 ## Rules
