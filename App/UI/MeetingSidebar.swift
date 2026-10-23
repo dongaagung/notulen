@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Meetings, newest first. The one recording has a red dot; one whose
+/// Meetings by date, newest first, with search. The one recording has a red dot; one whose
 /// minutes are being written, a spinner.
 struct MeetingSidebar: View {
     @Environment(AppStore.self) private var store
@@ -8,21 +8,48 @@ struct MeetingSidebar: View {
     @Environment(MeetingFinisher.self) private var finisher
     @Binding var selection: Meeting.ID?
     let onNewMeeting: () -> Void
+    @ViewState private var query = ""
+    @ViewState private var pendingDelete: Meeting?
 
     var body: some View {
+        let groups = MeetingGroups.group(
+            store.meetings.filter { MeetingGroups.matches($0, query: query) }, now: .now, calendar: .current)
         List(selection: $selection) {
-            ForEach(store.meetings) { meeting in
-                MeetingRow(
-                    meeting: meeting, isRecording: isRecording(meeting),
-                    isProcessing: finisher.running[meeting.id] != nil)
-                    .tag(meeting.id)
+            ForEach(groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.meetings) { meeting in
+                        MeetingRow(
+                            meeting: meeting, isRecording: isRecording(meeting),
+                            isProcessing: finisher.running[meeting.id] != nil)
+                            .tag(meeting.id)
+                            .contextMenu {
+                                Button("Hapus…") { pendingDelete = meeting }
+                                    .disabled(isActive(meeting))
+                            }
+                    }
+                }
             }
         }
+        .searchable(text: $query, prompt: "Cari meeting")
         .overlay {
             if store.meetings.isEmpty {
                 Text("Belum ada meeting")
                     .foregroundStyle(.secondary)
+            } else if groups.isEmpty {
+                Text("Tidak ada yang cocok")
+                    .foregroundStyle(.secondary)
             }
+        }
+        .confirmationDialog(
+            "Hapus “\(pendingDelete.map(displayTitle) ?? "")”? Transkrip dan notulennya ikut terhapus.",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible, presenting: pendingDelete
+        ) { meeting in
+            Button("Hapus", role: .destructive) {
+                if selection == meeting.id { selection = nil }
+                store.delete(meeting)
+            }
+            Button("Batal", role: .cancel) {}
         }
         .safeAreaInset(edge: .bottom) {
             Button(action: onNewMeeting) {
@@ -33,6 +60,15 @@ struct MeetingSidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         }
+    }
+
+    private func displayTitle(_ meeting: Meeting) -> String {
+        meeting.title.isEmpty ? "Tanpa judul" : meeting.title
+    }
+
+    /// Not deletable: it is recording, or being resumed or finished.
+    private func isActive(_ meeting: Meeting) -> Bool {
+        session.meeting?.id == meeting.id && session.phase != .idle
     }
 
     private func isRecording(_ meeting: Meeting) -> Bool {
