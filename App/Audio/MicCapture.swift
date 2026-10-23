@@ -56,15 +56,19 @@ final class MicCapture: MicCapturing {
         stop()
         let (stream, continuation) = AsyncStream.makeStream(
             of: AudioChunk.self, bufferingPolicy: .bufferingNewest(128))
+        // Listen first: opening the mic can itself change the hardware (AirPods
+        // switch to their headset profile). Both callbacks reach the main actor
+        // only after this returns, when the continuation is set.
+        listenForDeviceChanges()
         do {
             try attach(continuation)
         } catch {
+            stopListeningForDeviceChanges()
             continuation.finish()
             throw error
         }
         self.continuation = continuation
         announcedDevice = attachedDevice
-        listenForDeviceChanges()
         return stream
     }
 
@@ -99,9 +103,9 @@ final class MicCapture: MicCapturing {
         announceDeviceIfChanged()
     }
 
-    /// Taps the input node in the hardware's current format and starts the
-    /// engine. Every tap feeds the same continuation, so the stream outlives
-    /// restarts.
+    /// Taps the input node in mono at the hardware's current sample rate and
+    /// starts the engine. Every tap feeds the same continuation, so the stream
+    /// outlives restarts.
     ///
     /// The engine doesn't open the default input device itself but a private
     /// aggregate (CADefaultDeviceAggregate) of the default input and output
@@ -113,14 +117,9 @@ final class MicCapture: MicCapturing {
             kAudioHardwarePropertyDefaultInputDevice, initial: AudioObjectID.unknown)
         guard device.isValid else { throw Failure.noInputDevice }
         let input = engine.inputNode
-        // From the hardware format, not the node's output format: after a
-        // configuration change the node keeps the format the last tap set, and
-        // a tap whose sample rate differs from the hardware's raises an exception.
-        let hardware = input.inputFormat(forBus: 0)
-        guard hardware.sampleRate > 0, hardware.channelCount > 0,
-              let format = AVAudioFormat(
-                  standardFormatWithSampleRate: hardware.sampleRate, channels: hardware.channelCount)
-        else { throw Failure.noInputDevice }
+        guard let format = Self.tapFormat(forHardware: input.inputFormat(forBus: 0)) else {
+            throw Failure.noInputDevice
+        }
 
         // @Sendable keeps the tap block off the main actor: it runs on the audio thread.
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { @Sendable buffer, _ in
@@ -136,6 +135,18 @@ final class MicCapture: MicCapturing {
             throw error
         }
         attachedDevice = device
+    }
+
+    /// Mono at the hardware's sample rate, or nil when the hardware has no
+    /// input. The rate comes from the hardware, not the node's output format:
+    /// after a configuration change the node keeps the format the last tap set,
+    /// and a tap whose rate differs from the hardware's raises an exception.
+    /// The channel count is the node's to convert, and mono also works for
+    /// multi-input interfaces, which a standard format can't describe past
+    /// two channels.
+    nonisolated static func tapFormat(forHardware hardware: AVAudioFormat) -> AVAudioFormat? {
+        guard hardware.sampleRate > 0, hardware.channelCount > 0 else { return nil }
+        return AVAudioFormat(standardFormatWithSampleRate: hardware.sampleRate, channels: 1)
     }
 
     /// Releases the tap and the engine. The continuation stays open.
