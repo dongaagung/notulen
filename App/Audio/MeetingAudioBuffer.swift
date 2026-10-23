@@ -5,9 +5,9 @@ import AVFoundation
 /// arrives.
 ///
 /// Threading contract: one writer while recording (`append`, `beginSegment`),
-/// reads (`sampleCount`, `copySamples`, `meetingTime`, `coveredUntil`) only
-/// after recording stops, and `wipe()` once when the buffer is no longer
-/// needed. There is no locking, hence `@unchecked Sendable`.
+/// reads (`sampleCount`, `copySamples`, `meetingTime`, `meetingSpans`,
+/// `coveredUntil`) only after recording stops, and `wipe()` once when the
+/// buffer is no longer needed. There is no locking, hence `@unchecked Sendable`.
 final class MeetingAudioBuffer: @unchecked Sendable {
     static let sampleRate = 16_000.0
     static let maxDuration: TimeInterval = 4 * 3600
@@ -96,11 +96,47 @@ final class MeetingAudioBuffer: @unchecked Sendable {
         return segment.meetingStart + Double(sample - segment.sampleOffset) / Self.sampleRate
     }
 
-    /// Copies samples as Float in [-1, 1] (Int16 / 32768).
-    func copySamples(into destination: UnsafeMutablePointer<Float>, offset: Int, count: Int) throws {
-        guard offset >= 0, count >= 0, offset <= sampleCount, count <= sampleCount - offset else {
-            throw Failure.rangeOutOfBounds
+    /// The meeting time a stretch of the stored audio (seconds from its
+    /// start) covers: one span per recording segment it touches, so none
+    /// crosses a gap. An end exactly where a segment ends stays in that
+    /// segment. Clamped to the stored audio.
+    func meetingSpans(fromBufferTime start: TimeInterval, to end: TimeInterval) -> [TimeSpan] {
+        let first = max(0, Int((start * Self.sampleRate).rounded()))
+        let last = min(sampleCount, Int((end * Self.sampleRate).rounded()))
+        guard first < last else { return [] }
+        return segments.indices.compactMap { index in
+            let segment = segments[index]
+            let segmentEnd = index + 1 < segments.count ? segments[index + 1].sampleOffset : sampleCount
+            let from = max(first, segment.sampleOffset)
+            let to = min(last, segmentEnd)
+            guard from < to else { return nil }
+            return TimeSpan(
+                start: segment.meetingStart + Double(from - segment.sampleOffset) / Self.sampleRate,
+                end: segment.meetingStart + Double(to - segment.sampleOffset) / Self.sampleRate)
         }
+    }
+
+    /// Copies `count` samples from `offset` as Float in [-1, 1] (Int16 /
+    /// 32768). Outside the stored audio is silence: FluidAudio reads whole
+    /// windows past the end, as its own sample sources allow.
+    func copySamples(into destination: UnsafeMutablePointer<Float>, offset: Int, count: Int) throws {
+        guard count >= 0 else { throw Failure.rangeOutOfBounds }
+        // The stored samples the request covers.
+        let first = max(offset, 0)
+        let last = min(offset + count, sampleCount)
+        guard first < last else {
+            destination.update(repeating: 0, count: count)
+            return
+        }
+        let lead = first - offset
+        let tail = offset + count - last
+        destination.update(repeating: 0, count: lead)
+        (destination + (count - tail)).update(repeating: 0, count: tail)
+        copyStored(into: destination + lead, offset: first, count: last - first)
+    }
+
+    /// `offset..<offset + count` lies within the stored audio.
+    private func copyStored(into destination: UnsafeMutablePointer<Float>, offset: Int, count: Int) {
         var done = 0
         while done < count {
             let position = offset + done

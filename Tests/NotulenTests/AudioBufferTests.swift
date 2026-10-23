@@ -38,6 +38,25 @@ import Testing
         #expect(buffer.coveredUntil == 101)
     }
 
+    /// A stretch of stored audio across a gap maps to one span per side; an
+    /// end on the boundary stays in the stretch before it.
+    @Test func meetingSpansSplitAtGaps() {
+        let buffer = MeetingAudioBuffer(maxSamples: 100_000, chunkSamples: 4096)
+        buffer.beginSegment(atMeetingTime: 0)
+        buffer.append(pcm([Int16](repeating: 1, count: 16_000)))
+        buffer.beginSegment(atMeetingTime: 100)
+        buffer.append(pcm([Int16](repeating: 1, count: 16_000)))
+        #expect(buffer.meetingSpans(fromBufferTime: 0.25, to: 0.75) == [TimeSpan(start: 0.25, end: 0.75)])
+        #expect(buffer.meetingSpans(fromBufferTime: 0.5, to: 1) == [TimeSpan(start: 0.5, end: 1)])
+        #expect(buffer.meetingSpans(fromBufferTime: 1, to: 1.5) == [TimeSpan(start: 100, end: 100.5)])
+        #expect(buffer.meetingSpans(fromBufferTime: 0.5, to: 1.5)
+            == [TimeSpan(start: 0.5, end: 1), TimeSpan(start: 100, end: 100.5)])
+        // Clamped to the audio there is.
+        #expect(buffer.meetingSpans(fromBufferTime: 1.75, to: 9) == [TimeSpan(start: 100.75, end: 101)])
+        #expect(buffer.meetingSpans(fromBufferTime: 3, to: 4).isEmpty)
+        #expect(buffer.meetingSpans(fromBufferTime: 0.5, to: 0.5).isEmpty)
+    }
+
     @Test func stopsAtCap() {
         let buffer = MeetingAudioBuffer(maxSamples: 10, chunkSamples: 4)
         buffer.beginSegment(atMeetingTime: 0)
@@ -54,11 +73,23 @@ import Testing
         #expect(try read(buffer, offset: 3, count: 4) == [3, 4, 5, 6].map { Float($0) / 32768 })
     }
 
-    @Test func copyOutOfRangeThrows() {
+    /// FluidAudio reads whole windows past the end of the audio, as its own
+    /// sample sources allow; what isn't there is silence.
+    @Test func copyPastTheEndIsSilence() throws {
         let buffer = MeetingAudioBuffer(maxSamples: 100, chunkSamples: 4)
         buffer.beginSegment(atMeetingTime: 0)
-        buffer.append(pcm([1, 2, 3]))
-        #expect(throws: (any Error).self) { try read(buffer, offset: 2, count: 4) }
+        buffer.append(pcm([16384, 8192, -16384]))
+        var out = [Float](repeating: 9, count: 5)
+        try out.withUnsafeMutableBufferPointer {
+            try buffer.copySamples(into: $0.baseAddress!, offset: 2, count: 4)
+        }
+        #expect(out == [-0.5, 0, 0, 0, 9])
+        #expect(try read(buffer, offset: 7, count: 2) == [0, 0])
+        #expect(try read(buffer, offset: -1, count: 3) == [0, 0.5, 0.25])
+        #expect(try read(MeetingAudioBuffer(), offset: 0, count: 2) == [0, 0])
+        #expect(throws: (any Error).self) {
+            try out.withUnsafeMutableBufferPointer { try buffer.copySamples(into: $0.baseAddress!, offset: 0, count: -1) }
+        }
     }
 
     @Test func wipeEmptiesBuffer() {

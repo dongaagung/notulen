@@ -28,7 +28,7 @@ final class RecoveryTests {
         let now = startedAt.addingTimeInterval(300)
         // No AI: lines too short to be speech end ready without minutes.
         return MeetingSession(
-            store: store, finisher: MeetingFinisher(store: store) { nil },
+            store: store, finisher: MeetingFinisher(store: store, diarizer: nil) { nil },
             devices: { _ in devices }, speech: { _, _ in speech }, now: { now },
             audioBuffer: audioBuffer, power: power)
     }

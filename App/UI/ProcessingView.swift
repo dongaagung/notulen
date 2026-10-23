@@ -5,6 +5,8 @@ import SwiftUI
 struct ProcessingView: View {
     let meeting: Meeting
     let step: MeetingFinisher.Step
+    /// This run's steps, in order.
+    let steps: [MeetingFinisher.Step]
 
     var body: some View {
         VStack(spacing: 22) {
@@ -15,7 +17,7 @@ struct ProcessingView: View {
                     .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 10) {
-                ForEach(MeetingFinisher.steps, id: \.self) { row($0) }
+                ForEach(steps, id: \.self) { row($0) }
             }
         }
         .padding(40)
@@ -25,7 +27,6 @@ struct ProcessingView: View {
     }
 
     private func row(_ item: MeetingFinisher.Step) -> some View {
-        let steps = MeetingFinisher.steps
         let index = steps.firstIndex(of: item) ?? 0
         let current = steps.firstIndex(of: step) ?? 0
         return HStack(spacing: 10) {

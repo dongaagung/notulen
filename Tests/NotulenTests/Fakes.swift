@@ -237,3 +237,71 @@ final class FakeLLMClient: LLMClient, @unchecked Sendable {
         }
     }
 }
+
+/// Answers with prepared speaker turns, or fails. Notes how much audio it
+/// was given; when `held`, waits for `release()` before answering.
+final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
+    private let result: Result<[DiarizedSegment], any Error>
+    private let lock = NSLock()
+    private var held: Bool
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var heard: [Int] = []
+
+    init(_ result: Result<[DiarizedSegment], any Error>, held: Bool = false) {
+        self.result = result
+        self.held = held
+    }
+
+    /// The buffer's sample count at each call.
+    var samplesHeard: [Int] { lock.withLock { heard } }
+
+    var isWaiting: Bool { lock.withLock { !waiting.isEmpty } }
+
+    /// Answers the calls waiting, and later ones at once.
+    func release() {
+        let waiting = lock.withLock {
+            held = false
+            defer { self.waiting = [] }
+            return self.waiting
+        }
+        waiting.forEach { $0.resume() }
+    }
+
+    func diarize(_ audio: MeetingAudioBuffer) async throws -> [DiarizedSegment] {
+        let holds = lock.withLock {
+            heard.append(audio.sampleCount)
+            return held
+        }
+        if holds {
+            await withCheckedContinuation { continuation in
+                let released = lock.withLock {
+                    if held { waiting.append(continuation) }
+                    return !held
+                }
+                if released { continuation.resume() }
+            }
+        }
+        return try result.get()
+    }
+}
+
+extension MeetingAudioBuffer {
+    /// `seconds` of quiet audio from the meeting's start, in one stretch.
+    static func filled(seconds: TimeInterval) -> MeetingAudioBuffer {
+        let buffer = MeetingAudioBuffer()
+        buffer.beginSegment(atMeetingTime: 0)
+        buffer.append(.silence(seconds: seconds))
+        return buffer
+    }
+}
+
+extension AVAudioPCMBuffer {
+    /// `seconds` of zeros, in the format the meeting audio waits in.
+    static func silence(seconds: TimeInterval) -> AVAudioPCMBuffer {
+        let frames = AVAudioFrameCount((seconds * MeetingAudioBuffer.sampleRate).rounded())
+        let buffer = AVAudioPCMBuffer(pcmFormat: .mono16kInt16, frameCapacity: max(frames, 1))!
+        buffer.frameLength = frames
+        buffer.int16ChannelData![0].update(repeating: 0, count: Int(frames))
+        return buffer
+    }
+}

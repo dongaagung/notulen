@@ -44,7 +44,7 @@ final class PowerTests {
         let clock = clock
         // No AI: lines too short to be speech end ready without minutes.
         return MeetingSession(
-            store: store, finisher: MeetingFinisher(store: store) { nil },
+            store: store, finisher: MeetingFinisher(store: store, diarizer: nil) { nil },
             devices: { [unowned self] _ in
                 deviceRequests += 1
                 return devices

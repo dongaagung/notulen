@@ -1,9 +1,11 @@
 import Foundation
 import Observation
 
-/// Turns an ended meeting into its minutes: the meeting is processing
-/// meanwhile, then ready (with minutes, or without when nothing was said) or
-/// failed with why, to try again. The transcript is never changed.
+/// Turns an ended meeting into its minutes: first the remote speakers are
+/// told apart in its audio, then the minutes are written. The meeting is
+/// processing meanwhile, then ready (with minutes, or without when nothing
+/// was said) or failed with why, to try again. The transcript is never
+/// changed: the speakers go to the meeting as line assignments.
 @MainActor
 @Observable
 final class MeetingFinisher {
@@ -18,25 +20,31 @@ final class MeetingFinisher {
         }
     }
 
-    /// The steps a finish goes through, in order. Speaker separation joins
-    /// in a later task.
-    static let steps: [Step] = [.writingMinutes]
+    /// Every step a finish can go through, in order.
+    static let steps: [Step] = [.separatingSpeakers, .writingMinutes]
 
     /// What each meeting being finished is doing now, by meeting ID.
     private(set) var running: [UUID: Step] = [:]
+    /// Meetings whose finish separates speakers; other runs only write.
+    private var separating: Set<UUID> = []
 
     private let store: AppStore
+    private let diarizer: (any SpeakerDiarizing)?
     private let writer: @MainActor () -> MinutesWriter?
 
-    /// `writer` is nil while the AI provider isn't ready.
-    init(store: AppStore, writer: @escaping @MainActor () -> MinutesWriter?) {
+    /// `diarizer` is nil without diarization models: the meeting's lines
+    /// then stay "Lainnya". `writer` is nil while the AI provider isn't
+    /// ready.
+    init(store: AppStore, diarizer: (any SpeakerDiarizing)?, writer: @escaping @MainActor () -> MinutesWriter?) {
         self.store = store
+        self.diarizer = diarizer
         self.writer = writer
     }
 
-    /// Writes with the active provider's smart model and prompts/minutes.md.
-    convenience init(store: AppStore) {
-        self.init(store: store) {
+    /// Separates speakers with the bundled models, if the app has them, and
+    /// writes with the active provider's smart model and prompts/minutes.md.
+    convenience init(store: AppStore, diarizer: (any SpeakerDiarizing)? = SpeakerDiarizer.bundled()) {
+        self.init(store: store, diarizer: diarizer) {
             guard let client = store.aiClient(), let template = try? PromptTemplate.load("minutes") else {
                 return nil
             }
@@ -44,32 +52,65 @@ final class MeetingFinisher {
         }
     }
 
-    /// Writes the minutes of a meeting that just ended. `audio` is its
-    /// meeting audio, if it still has any; it's wiped whatever happens.
+    /// The steps the meeting's finish goes through, for showing progress.
+    func steps(for id: UUID) -> [Step] {
+        separating.contains(id) ? Self.steps : [.writingMinutes]
+    }
+
+    /// Tells the speakers apart in the meeting audio, if there is any and
+    /// the models are there, then writes the minutes. `audio` is the
+    /// meeting's audio, if it still has any; it's wiped once the speakers
+    /// are separated, before the minutes, whatever happens.
     func finish(_ id: UUID, audio: MeetingAudioBuffer?) async {
-        // Speaker separation reads the audio first, in a later task; nothing
-        // needs it after that.
+        defer { audio?.wipe() }
+        guard running[id] == nil, store.meeting(id) != nil else { return }
+        defer {
+            running[id] = nil
+            separating.remove(id)
+        }
+        if let audio, audio.sampleCount > 0, let diarizer {
+            separating.insert(id)
+            running[id] = .separatingSpeakers
+            await separateSpeakers(id, audio: audio, with: diarizer)
+        }
+        // Nothing needs the audio now; the minutes take a while.
         audio?.wipe()
         await writeMinutes(id)
     }
 
     /// Writes the minutes again, as after merging speakers or a failure.
     /// Ticked action items and translations go: the new items have new IDs.
+    /// The speakers stay as they are: the audio is long gone.
     func regenerate(_ id: UUID) async {
         guard running[id] == nil, var meeting = store.meeting(id) else { return }
+        defer { running[id] = nil }
         meeting.actionItemsDone = []
         meeting.translations = [:]
         store.save(meeting)
         await writeMinutes(id)
     }
 
+    /// Gives the meeting's lines the speakers heard in its audio. When that
+    /// fails, or nobody spoke, the lines stay "Lainnya" and the minutes are
+    /// written anyway. Changes the owner makes meanwhile are kept.
+    private func separateSpeakers(_ id: UUID, audio: MeetingAudioBuffer, with diarizer: any SpeakerDiarizing) async {
+        guard let segments = try? await diarizer.diarize(audio),
+              let lines = try? store.transcriptLines(for: id)
+        else { return }
+        let matched = SpeakerMatcher.assign(lines: lines, segments: segments)
+        guard var meeting = store.meeting(id) else { return }
+        meeting.speakers = matched.speakers
+        meeting.speakerAssignments = matched.assignments
+        store.save(meeting)
+    }
+
     /// Ready with minutes; ready without when nothing was said (no AI
     /// needed); failed with why otherwise. Changes the owner makes
-    /// meanwhile, such as the title or speaker names, are kept.
+    /// meanwhile, such as the title or speaker names, are kept. The caller
+    /// guards against a second run and clears `running` after.
     private func writeMinutes(_ id: UUID) async {
-        guard running[id] == nil, var meeting = store.meeting(id) else { return }
+        guard var meeting = store.meeting(id) else { return }
         running[id] = .writingMinutes
-        defer { running[id] = nil }
         meeting.status = .processing
         meeting.failure = nil
         store.save(meeting)

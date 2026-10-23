@@ -93,7 +93,7 @@ struct ContentView: View {
             if session.meeting?.id == meeting.id && session.phase != .idle {
                 LiveMeetingView()
             } else if let step = finisher.running[meeting.id] {
-                ProcessingView(meeting: meeting, step: step)
+                ProcessingView(meeting: meeting, step: step, steps: finisher.steps(for: meeting.id))
             } else {
                 MinutesView(meeting: meeting)
                     .id(meeting.id)

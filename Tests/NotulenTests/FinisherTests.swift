@@ -22,9 +22,14 @@ final class FinisherTests {
     }
 
     /// Writes with `client`; nil stands for an AI provider that isn't ready.
-    private func makeFinisher(_ client: (any LLMClient)?) throws -> MeetingFinisher {
+    /// Separates speakers with `diarizer`; nil stands for missing models.
+    private func makeFinisher(
+        _ client: (any LLMClient)?, diarizer: (any SpeakerDiarizing)? = nil
+    ) throws -> MeetingFinisher {
         let template = try PromptTemplate.load("minutes")
-        return MeetingFinisher(store: store) { client.map { MinutesWriter(client: $0, template: template) } }
+        return MeetingFinisher(store: store, diarizer: diarizer) {
+            client.map { MinutesWriter(client: $0, template: template) }
+        }
     }
 
     /// An hour-long meeting saved as `status`, with `lines` in its journal.
@@ -136,6 +141,8 @@ final class FinisherTests {
         #expect(await waitUntil { gate.isWaiting })
         #expect(finisher.running == [meeting.id: .writingMinutes])
         #expect(store.meetings.first { $0.id == meeting.id }?.status == .processing)
+        // No audio, so no speakers to separate.
+        #expect(finisher.steps(for: meeting.id) == [.writingMinutes])
         gate.release()
         await finishing.value
         #expect(finisher.running.isEmpty)
@@ -155,6 +162,103 @@ final class FinisherTests {
         gate.release()
         await finishing.value
         #expect(try saved(meeting.id).title == "Judul baru")
+    }
+
+    // MARK: Speakers
+
+    /// The minutes name the speakers told apart, not "others".
+    @Test func finishSeparatesSpeakersBeforeTheMinutes() async throws {
+        let fake = FakeLLMClient(reply: try fixture())
+        let meeting = try savedMeeting(lines: Self.speech)
+        // Lines at 0–5 and 10–15.
+        let diarizer = FakeDiarizer(.success([
+            DiarizedSegment(label: "S2", start: 0, end: 6), DiarizedSegment(label: "S1", start: 9, end: 16),
+        ]))
+        let audio = MeetingAudioBuffer.filled(seconds: 16)
+        try await makeFinisher(fake, diarizer: diarizer).finish(meeting.id, audio: audio)
+
+        let finished = try saved(meeting.id)
+        let lines = try store.transcriptLines(for: meeting.id)
+        #expect(diarizer.samplesHeard == [256_000])
+        #expect(finished.speakers == [SpeakerInfo(id: .remote(1), name: nil), SpeakerInfo(id: .remote(2), name: nil)])
+        #expect(lines.map { finished.speaker(of: $0) } == [.remote(1), .remote(2)])
+        #expect(lines.map { finished.displayName(for: finished.speaker(of: $0)) } == ["Pembicara 1", "Pembicara 2"])
+        let transcript = try #require(fake.requests.first?.messages.first?.content)
+        #expect(transcript.contains("[[s1]]: Selamat pagi"))
+        #expect(transcript.contains("[[s2]]: Rilis"))
+        #expect(!transcript.contains("[[others]]"))
+        #expect(finished.status == .ready)
+        #expect(audio.sampleCount == 0)
+    }
+
+    /// The step shows while speakers are separated; the audio is gone before
+    /// the minutes are written; changes made meanwhile are kept.
+    @Test func separatingShowsItsStepThenFreesTheAudio() async throws {
+        let gate = HeldLLMClient(reply: try fixture())
+        let meeting = try savedMeeting(lines: Self.speech)
+        let diarizer = FakeDiarizer(.success([DiarizedSegment(label: "S1", start: 0, end: 20)]), held: true)
+        let audio = MeetingAudioBuffer.filled(seconds: 20)
+        let finisher = try makeFinisher(gate, diarizer: diarizer)
+        let finishing = Task { await finisher.finish(meeting.id, audio: audio) }
+
+        #expect(await waitUntil { diarizer.isWaiting })
+        #expect(finisher.running == [meeting.id: .separatingSpeakers])
+        #expect(finisher.steps(for: meeting.id) == [.separatingSpeakers, .writingMinutes])
+        #expect(store.meeting(meeting.id)?.status == .processing)
+        var edited = try #require(store.meeting(meeting.id))
+        edited.title = "Judul baru"
+        store.save(edited)
+        diarizer.release()
+
+        #expect(await waitUntil { gate.isWaiting })
+        #expect(finisher.running == [meeting.id: .writingMinutes])
+        #expect(finisher.steps(for: meeting.id) == [.separatingSpeakers, .writingMinutes])
+        #expect(audio.sampleCount == 0)
+        #expect(store.meeting(meeting.id)?.speakers.map(\.id) == [.remote(1)])
+        gate.release()
+        await finishing.value
+
+        let finished = try saved(meeting.id)
+        #expect(finished.title == "Judul baru")
+        #expect(finished.speakerAssignments.count == 2)
+        #expect(finisher.running.isEmpty)
+    }
+
+    /// Without audio or models the minutes are written with "others".
+    @Test func noSeparationWithoutAudioOrModels() async throws {
+        let diarizer = FakeDiarizer(.success([DiarizedSegment(label: "S1", start: 0, end: 20)]))
+        let first = try savedMeeting(lines: Self.speech)
+        try await makeFinisher(FakeLLMClient(reply: try fixture()), diarizer: diarizer).finish(first.id, audio: nil)
+        let second = try savedMeeting(lines: Self.speech)
+        try await makeFinisher(FakeLLMClient(reply: try fixture()), diarizer: diarizer)
+            .finish(second.id, audio: MeetingAudioBuffer())
+        #expect(diarizer.samplesHeard.isEmpty)
+
+        let third = try savedMeeting(lines: Self.speech)
+        let audio = MeetingAudioBuffer.filled(seconds: 20)
+        try await makeFinisher(FakeLLMClient(reply: try fixture()), diarizer: nil).finish(third.id, audio: audio)
+        #expect(audio.sampleCount == 0)
+        for id in [first.id, second.id, third.id] {
+            let finished = try saved(id)
+            #expect(finished.status == .ready)
+            #expect(finished.speakers.isEmpty && finished.speakerAssignments.isEmpty)
+        }
+    }
+
+    /// Speakers aren't separated again: the audio is long gone.
+    @Test func regenerateKeepsTheSpeakers() async throws {
+        var meeting = try savedMeeting(status: .ready, lines: Self.speech)
+        let line = try #require(store.transcriptLines(for: meeting.id).first)
+        meeting.speakers = [SpeakerInfo(id: .remote(1), name: "Rina")]
+        meeting.speakerAssignments = [SpeakerAssignment(line: line.id, speaker: .remote(1))]
+        store.save(meeting)
+        let fake = FakeLLMClient(reply: try fixture())
+        try await makeFinisher(fake, diarizer: FakeDiarizer(.success([]))).regenerate(meeting.id)
+
+        let again = try saved(meeting.id)
+        #expect(again.speakers == meeting.speakers)
+        #expect(again.speakerAssignments == meeting.speakerAssignments)
+        #expect(fake.requests.first?.messages.first?.content.contains("[[s1]]: Selamat pagi") == true)
     }
 
     // MARK: Regenerate
@@ -244,8 +348,7 @@ final class FinisherTests {
     @Test func stepLabels() {
         #expect(MeetingFinisher.Step.separatingSpeakers.label == "Memisahkan pembicara…")
         #expect(MeetingFinisher.Step.writingMinutes.label == "Menulis notulen…")
-        // Speaker separation joins in a later task.
-        #expect(MeetingFinisher.steps == [.writingMinutes])
+        #expect(MeetingFinisher.steps == [.separatingSpeakers, .writingMinutes])
     }
 
     @Test func minutesViewInstantiates() throws {
@@ -253,7 +356,7 @@ final class FinisherTests {
             title: "Weekly", startedAt: startedAt, status: .ready, language: "id-ID", audioSource: .systemWide)
         meeting.minutes = try JSONReply.decode(Minutes.self, from: try fixture())
         _ = MinutesView(meeting: meeting)
-        _ = ProcessingView(meeting: meeting, step: .writingMinutes)
+        _ = ProcessingView(meeting: meeting, step: .writingMinutes, steps: MeetingFinisher.steps)
     }
 
     @Test func metaLineHasDateTimesDurationSourceAndLanguage() throws {
