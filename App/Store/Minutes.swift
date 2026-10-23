@@ -78,7 +78,9 @@ struct Minutes: Codable, Equatable, Sendable {
     }
 
     /// Times clamped to the meeting, owners and hints naming speakers the
-    /// meeting doesn't have dropped (an owner's `name` stays), topics in order.
+    /// meeting doesn't have dropped (an owner's `name` stays), topics in order,
+    /// none ending before it starts. Name hints are for remote speakers only:
+    /// the owner is always "Saya".
     func sanitized(duration: TimeInterval, knownSpeakers: Set<SpeakerID>) -> Minutes {
         func clamp(_ time: Double) -> Double { min(max(time, 0), max(duration, 0)) }
         var result = self
@@ -95,10 +97,12 @@ struct Minutes: Codable, Equatable, Sendable {
         result.topics = topics.map { source in
             var topic = source
             topic.start = clamp(topic.start)
-            topic.end = clamp(topic.end)
+            topic.end = max(clamp(topic.end), topic.start)
             return topic
         }.sorted { $0.start < $1.start }
-        result.speakerNameHints = speakerNameHints.filter { knownSpeakers.contains($0.speaker) }
+        result.speakerNameHints = speakerNameHints.filter {
+            $0.speaker.remoteNumber != nil && knownSpeakers.contains($0.speaker)
+        }
         return result
     }
 }

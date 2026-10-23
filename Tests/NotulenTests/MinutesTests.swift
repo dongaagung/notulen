@@ -41,6 +41,17 @@ struct MinutesTests {
         #expect(fake.requests.isEmpty)
     }
 
+    /// Japanese and Chinese have no spaces between words.
+    @Test func wordsCountWithoutSpaces() async throws {
+        #expect(MinutesWriter.wordCount("今日は会議を始めましょう") >= 3)
+        #expect(MinutesWriter.wordCount("我们开始开会吧") >= 3)
+        #expect(MinutesWriter.wordCount("ya oke") == 2)
+        #expect(MinutesWriter.wordCount(" … ?! ") == 0)
+        let fake = FakeLLMClient(reply: try fixture())
+        _ = try await writer(fake).write(meeting: meeting, lines: [line(.remote(1), "今日は会議を始めましょう", start: 2)])
+        #expect(fake.requests.count == 1)
+    }
+
     @Test func requestCarriesTranscriptAndSchema() throws {
         let request = try writer(FakeLLMClient(reply: "{}")).request(
             meeting: meeting, lines: [line(.remote(1), "Selamat pagi semuanya", start: 2)])
@@ -89,6 +100,34 @@ struct MinutesTests {
         #expect(clean.topics.map(\.title) == ["A", "B"])
         #expect(clean.topics[0].start == 0)
         #expect(clean.topics[1].end == 3600)
+        #expect(clean.speakerNameHints.map(\.name) == ["Cici"])
+    }
+
+    /// A topic never ends before it starts, also after clamping.
+    @Test func sanitizeKeepsTopicEndsAfterStarts() {
+        let minutes = Minutes(
+            titleSuggestion: "T", summary: "S",
+            topics: [
+                .init(title: "Backwards", start: 500, end: 100, points: []),
+                .init(title: "Past the end", start: 5000, end: 4000, points: []),
+                .init(title: "Before the start", start: -50, end: -10, points: []),
+            ])
+        let clean = minutes.sanitized(duration: 3600, knownSpeakers: [.me])
+        #expect(clean.topics.map(\.title) == ["Before the start", "Backwards", "Past the end"])
+        #expect(clean.topics.map(\.start) == [0, 500, 3600])
+        #expect(clean.topics.map(\.end) == [0, 500, 3600])
+    }
+
+    /// Only remote speakers get renamed; the owner is always "Saya".
+    @Test func nameHintsAreForRemoteSpeakersOnly() {
+        let minutes = Minutes(
+            titleSuggestion: "T", summary: "S",
+            speakerNameHints: [
+                .init(speaker: .me, name: "Agung", evidence: "e"),
+                .init(speaker: .others, name: "Budi", evidence: "e"),
+                .init(speaker: .remote(1), name: "Cici", evidence: "e"),
+            ])
+        let clean = minutes.sanitized(duration: 3600, knownSpeakers: [.me, .others, .remote(1)])
         #expect(clean.speakerNameHints.map(\.name) == ["Cici"])
     }
 

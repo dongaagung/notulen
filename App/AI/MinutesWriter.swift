@@ -17,6 +17,21 @@ struct MinutesWriter: Sendable {
     /// A line needs this many words to count as speech.
     static let minimumWords = 3
 
+    /// Whether any line is speech, not just "ya" or "oke".
+    static func hasSpeech(_ lines: [TranscriptLine]) -> Bool {
+        lines.contains { wordCount($0.text) >= minimumWords }
+    }
+
+    /// Words as the language divides them, so Japanese or Chinese, written
+    /// without spaces, count too. Punctuation isn't a word.
+    static func wordCount(_ text: String) -> Int {
+        var count = 0
+        text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in
+            count += 1
+        }
+        return count
+    }
+
     let client: any LLMClient
     let template: PromptTemplate
 
@@ -33,9 +48,7 @@ struct MinutesWriter: Sendable {
     }
 
     func write(meeting: Meeting, lines: [TranscriptLine]) async throws -> Minutes {
-        guard lines.contains(where: { $0.text.split(whereSeparator: \.isWhitespace).count >= Self.minimumWords }) else {
-            throw Failure.nothingRecorded
-        }
+        guard Self.hasSpeech(lines) else { throw Failure.nothingRecorded }
         let reply = try await client.completeStreaming(try request(meeting: meeting, lines: lines))
         let minutes = try JSONReply.decode(Minutes.self, from: reply)
         let duration = meeting.endedAt.map { $0.timeIntervalSince(meeting.startedAt) } ?? meeting.recordedUntil(lines)
