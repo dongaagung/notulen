@@ -121,14 +121,7 @@ struct DiarizationTests {
         ])
     }
 
-    /// Runs only where the models are downloaded (`make models`).
-    @Test(.enabled(if: DiarizationModels.directory() != nil))
-    func silentAudioYieldsNoSegments() async throws {
-        ModelHub.offlineMode = true
-        let diarizer = SpeakerDiarizer(modelsDirectory: try #require(DiarizationModels.directory()))
-        let buffer = MeetingAudioBuffer.filled(seconds: 5)
-        #expect(try await diarizer.diarize(buffer) == [])
-    }
+    // The diarizer over the real models: DiarizationModelTests.
 
     // MARK: Finisher
 

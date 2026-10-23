@@ -54,6 +54,8 @@ Update this section when it changes.
 - `make build` (errors only) · `make run` · `make test` · `make install` ·
   `make uninstall` · `make icon` · `make models` (downloads the pinned
   diarization models into a gitignored folder; the bundle step copies them)
+- `make test FILTER='SpeakerTests|HTMLTests'` runs only those suites. The raw
+  test output is in .build/test.log; a crashed test process shows there.
 - Build after every change; fix errors before reporting done.
 - No Xcode-only tools: no #Preview, no asset catalogs, no SwiftData macros, no
   @Entry. `@State` is a macro in the macOS 27 SDK: use `@ViewState` (same

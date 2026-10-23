@@ -56,8 +56,22 @@ build: $(MODELS)
 run: build
 	open $(APP)
 
+# xcbeautify --quiet drops lines it doesn't know, such as a test process
+# that crashed. The raw output goes to $(TEST_LOG); when swift test fails,
+# its status and the log's telling lines show, and make fails with it.
+# FILTER is a regex: FILTER='SpeakerTests|HTMLTests'.
+TEST_LOG := .build/test.log
+
 test:
-	set -o pipefail; swift test $(SWIFTPM) $(TESTING) $(if $(FILTER),--filter $(FILTER)) 2>&1 | $(PRETTY) --is-ci
+	@mkdir -p .build
+	set -o pipefail; swift test $(SWIFTPM) $(TESTING) $(if $(FILTER),--filter '$(FILTER)') 2>&1 \
+		| tee $(TEST_LOG) | $(PRETTY) --is-ci; \
+	statuses=("$${PIPESTATUS[@]}"); \
+	if [ "$${statuses[0]}" -ne 0 ]; then \
+		echo "error: swift test exited with status $${statuses[0]}. From $(TEST_LOG):"; \
+		grep -E "error:|Fatal error|signal|crash|Test run with" $(TEST_LOG) | tail -n 20; \
+	fi; \
+	for status in "$${statuses[@]}"; do [ "$$status" -eq 0 ] || exit "$$status"; done
 
 # Optimized build, installed in /Applications to open from Launchpad,
 # Spotlight or the Dock. Quits a running copy first. Re-run after changes.
