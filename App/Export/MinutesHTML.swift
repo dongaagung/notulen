@@ -35,7 +35,10 @@ enum MinutesHTML {
                 done ? "☑" : "☐", "<span class=\"task\">\(text(item.task))</span><span class=\"sub\">\(owner)\(due)</span>",
                 at: item.at, done: done, box: true)
         })
-        body += section("Pertanyaan terbuka", minutes.openQuestions.map { row("?", text($0.question), at: $0.at) })
+        body += section("Pertanyaan terbuka", minutes.openQuestions.map { question in
+            let context = MinutesFormatting.context(question, in: meeting).map { "<span class=\"sub\">\(escape($0))</span>" }
+            return row("?", text(question.question) + (context ?? ""), at: question.at)
+        })
         body.append("<h2>Topik yang dibahas</h2>")
         if minutes.topics.isEmpty { body.append(none) }
         for (index, topic) in minutes.topics.enumerated() {

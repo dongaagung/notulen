@@ -28,7 +28,7 @@ private let minutes = Minutes(
         item("a1", owner: .init(speaker: .remote(1), name: nil), due: "Jumat", at: 16),
         item("a2", owner: nil, due: nil, at: 66),
     ],
-    openQuestions: [Minutes.OpenQuestion(id: "q1", question: "Anggaran?", context: nil, at: 52)],
+    openQuestions: [Minutes.OpenQuestion(id: "q1", question: "Anggaran?", context: "Kata [[s1]], pemakaian naik.", at: 52)],
     topics: [Minutes.Topic(title: "Status", start: 2, end: 24, points: ["Fitur selesai.", "[[s2]] menguji."])])
 
 private func render(_ minutes: Minutes = minutes, _ meeting: Meeting = meeting()) -> String {
@@ -61,6 +61,15 @@ struct MarkdownTests {
         var empty = minutes
         empty.openQuestions = []
         #expect(render(empty).contains("## Pertanyaan terbuka\n\n_Tidak ada._\n"))
+    }
+
+    @Test func questionContextFollowsOnItsOwnLine() {
+        #expect(render().contains("\n- Anggaran? (00:52)\n  Kata Andi, pemakaian naik.\n\n## Topik"))
+        for context in [nil, " \n "] as [String?] {
+            var bare = minutes
+            bare.openQuestions[0].context = context
+            #expect(render(bare).contains("\n- Anggaran? (00:52)\n\n## Topik"))
+        }
     }
 
     @Test func blankSummarySaysNone() {
@@ -108,13 +117,15 @@ struct MarkdownTests {
                 id: "a1", task: "Tugas\n- palsu", owner: .init(speaker: .remote(1), name: nil), due: "Jumat\n depan",
                 at: 16),
         ]
-        broken.openQuestions = [Minutes.OpenQuestion(id: "q1", question: "Anggaran?\r\nNaik?", context: nil, at: 52)]
+        broken.openQuestions = [
+            Minutes.OpenQuestion(id: "q1", question: "Anggaran?\r\nNaik?", context: "Pemakaian\n\n## naik.", at: 52),
+        ]
         broken.topics = [Minutes.Topic(title: "Status\nrilis", start: 2, end: 24, points: ["Fitur\n  selesai."])]
         let out = render(broken)
         #expect(out.contains("\nBaris satu.\nBaris dua.\n"))
         #expect(out.contains("\n- Rilis ## diundur. (00:14)\n"))
         #expect(out.contains("\n- [ ] Tugas - palsu — Andi · Jumat depan (00:16)\n"))
-        #expect(out.contains("\n- Anggaran? Naik? (00:52)\n"))
+        #expect(out.contains("\n- Anggaran? Naik? (00:52)\n  Pemakaian ## naik.\n"))
         #expect(out.contains("\n### 1. Status rilis (00:02–00:24)\n"))
         #expect(out.contains("\n- Fitur selesai.\n"))
     }

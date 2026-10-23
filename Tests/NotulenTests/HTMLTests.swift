@@ -21,7 +21,7 @@ private let minutes = Minutes(
         Minutes.ActionItem(id: "a1", task: "Tugas a1", owner: .init(speaker: .remote(1), name: nil), due: "Jumat", at: 16),
         Minutes.ActionItem(id: "a2", task: "Tugas a2", owner: nil, due: nil, at: 66),
     ],
-    openQuestions: [Minutes.OpenQuestion(id: "q1", question: "Anggaran?", context: nil, at: 52)],
+    openQuestions: [Minutes.OpenQuestion(id: "q1", question: "Anggaran?", context: "Kata [[s1]], pemakaian naik.", at: 52)],
     topics: [Minutes.Topic(title: "Status", start: 2, end: 24, points: ["Fitur selesai.", "[[s2]] menguji."])])
 
 private func render(_ minutes: Minutes = minutes, _ meeting: Meeting = meeting()) -> String {
@@ -66,7 +66,7 @@ struct HTMLTests {
             "Rilis diundur.", "00:14",
             "Tugas a1", "Andi", "Jumat", "00:16",
             "Tugas a2", "pemegang tidak disebut", "01:06",
-            "Anggaran?", "00:52",
+            "Anggaran?", "Kata Andi, pemakaian naik.", "00:52",
             "1. Status", "00:02–00:24", "Fitur selesai.", "Pembicara 2 menguji.",
         ], in: out))
     }
@@ -85,6 +85,18 @@ struct HTMLTests {
         #expect(out.contains("<span class=\"owner\">Andi</span> · Jumat"))
         #expect(out.contains("<span class=\"owner anon\">pemegang tidak disebut</span>"))
         #expect(out.contains("<span class=\"owner anon\">Pembicara 2</span>"))
+    }
+
+    @Test func questionContextShowsUnderTheQuestion() {
+        #expect(render().contains("Anggaran?<span class=\"sub\">Kata Andi, pemakaian naik.</span></div>"))
+        var odd = minutes
+        odd.openQuestions[0].context = "<b>\n[[s2]]"
+        #expect(render(odd).contains("Anggaran?<span class=\"sub\">&lt;b&gt; Pembicara 2</span></div>"))
+        for context in [nil, " \n "] as [String?] {
+            var bare = minutes
+            bare.openQuestions[0].context = context
+            #expect(render(bare).contains("Anggaran?</div>"))
+        }
     }
 
     @Test func timesPastAnHourUseHours() {

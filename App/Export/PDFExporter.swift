@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import Synchronization
 import WebKit
 
@@ -53,6 +54,18 @@ enum PDFExporter {
         operation.showsPrintPanel = false
         operation.showsProgressPanel = false
         guard await Runner().run(operation, for: window) else { throw Failure.notSaved }
+        if let title = webView.title, !title.isEmpty { setTitle(title, of: url) }
+    }
+
+    /// Printing leaves the PDF untitled; the page's `<title>` becomes its
+    /// Title. Best effort: the PDF is saved either way.
+    private static func setTitle(_ title: String, of url: URL) {
+        guard let document = PDFDocument(url: url) else { return }
+        var attributes = document.documentAttributes ?? [:]
+        attributes[PDFDocumentAttribute.titleAttribute] = title
+        document.documentAttributes = attributes
+        guard let data = document.dataRepresentation() else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     /// A4, saved to `url`. WebKit lays the pages out by the HTML's `@page`

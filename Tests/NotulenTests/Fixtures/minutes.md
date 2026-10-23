@@ -19,6 +19,7 @@ Andi melapor kepada Saya.
 ## Pertanyaan terbuka
 
 - Anggaran? (00:52)
+  Kata Andi, pemakaian naik.
 
 ## Topik yang dibahas
 

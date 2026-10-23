@@ -93,6 +93,13 @@ enum MinutesFormatting {
         return due.isEmpty ? nil : due
     }
 
+    /// What the question came up with, on one line; nil when the AI gave
+    /// none.
+    static func context(_ question: Minutes.OpenQuestion, in meeting: Meeting) -> String? {
+        let context = oneLine(question.context ?? "", in: meeting)
+        return context.isEmpty ? nil : context
+    }
+
     /// The owner, then the remote speakers in order, merged ones once.
     static func participants(of meeting: Meeting) -> [String] {
         var seen: Set<SpeakerID> = [.me]

@@ -23,7 +23,11 @@ enum MinutesMarkdown {
             let due = MinutesFormatting.due(item, in: meeting).map { " · \($0)" } ?? ""
             return "- \(box) \(text(item.task)) — \(MinutesFormatting.owner(item, in: meeting))\(due) (\(time(item.at)))"
         })
-        out += section("Pertanyaan terbuka", minutes.openQuestions.map { "- \(text($0.question)) (\(time($0.at)))" })
+        // The context continues the item on a line of its own.
+        out += section("Pertanyaan terbuka", minutes.openQuestions.map { question in
+            let context = MinutesFormatting.context(question, in: meeting).map { "\n  \($0)" } ?? ""
+            return "- \(text(question.question)) (\(time(question.at)))\(context)"
+        })
         out += ["## Topik yang dibahas", ""]
         if minutes.topics.isEmpty { out += [none, ""] }
         for (index, topic) in minutes.topics.enumerated() {
