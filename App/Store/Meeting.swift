@@ -109,6 +109,9 @@ struct Meeting: Codable, Identifiable, Equatable, Sendable {
     var actionItemsDone: Set<String> = []
     var notionPageID: String?
     var failure: String?
+    /// The running notes per topic from the live view; the minutes replace them.
+    var liveNotes: LiveNotes?
+    var liveNotesUpdatedAt: Date?
 }
 
 extension Meeting {
@@ -130,5 +133,7 @@ extension Meeting {
         actionItemsDone = try container.decodeIfPresent(Set<String>.self, forKey: .actionItemsDone) ?? []
         notionPageID = try container.decodeIfPresent(String.self, forKey: .notionPageID)
         failure = try container.decodeIfPresent(String.self, forKey: .failure)
+        liveNotes = try container.decodeIfPresent(LiveNotes.self, forKey: .liveNotes)
+        liveNotesUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .liveNotesUpdatedAt)
     }
 }

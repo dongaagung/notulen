@@ -14,6 +14,8 @@ enum MeetingNotice: Equatable, Identifiable {
     /// The meeting plays through the Mac's own speakers, so the mic hears
     /// the other participants too.
     case speakerOutput
+    /// Live notes can't reach the AI without internet; the transcript goes on.
+    case liveNotesDelayed
 
     /// The meeting audio kept for speaker separation reached its 4-hour cap.
     static let speakerAudioFull = MeetingNotice.error(
@@ -28,6 +30,7 @@ enum MeetingNotice: Equatable, Identifiable {
         case .resumedAfterSleep(let duration): "resumedAfterSleep:\(duration)"
         case .micChanged(let name): "micChanged:\(name)"
         case .speakerOutput: "speakerOutput"
+        case .liveNotesDelayed: "liveNotesDelayed"
         }
     }
 
@@ -46,6 +49,8 @@ enum MeetingNotice: Equatable, Identifiable {
             "Mic berganti ke \(name)."
         case .speakerOutput:
             "Suara meeting keluar lewat speaker Mac. Suara peserta lain bisa masuk ke mic dan terlabel “Saya”. Pakai headset."
+        case .liveNotesDelayed:
+            "Catatan sementara tertunda karena tidak ada internet. Transkrip tetap berjalan."
         }
     }
 }

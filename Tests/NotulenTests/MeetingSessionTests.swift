@@ -56,6 +56,32 @@ final class MeetingSessionTests {
         #expect(lines.map(\.start) == [1, 3] && lines.map(\.end) == [2, 4])
     }
 
+    @Test func noLiveNotesWithoutAIProvider() async throws {
+        let session = makeSession()
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        #expect(session.liveNotes == nil)
+        _ = await session.stop()
+    }
+
+    @Test func liveNotesRunWhileRecordingAndStopWithIt() async throws {
+        // Ollama needs no key; nothing is due within this test, so no request goes out.
+        store.settings.aiProvider = .ollama
+        store.settings.providerModels[.ollama] = ProviderModels(
+            baseURL: AIProvider.ollama.defaultBaseURL, fastModel: "small", smartModel: "large")
+        try #require(store.aiClient() != nil)
+        let session = makeSession(FakeSpeech(meeting: [.final("Selamat pagi", 1, 2)]))
+        try session.begin(config)
+        #expect(await waitUntil { session.phase == .recording })
+        let updater = try #require(session.liveNotes)
+        meetingCapture.send()
+        #expect(await waitUntil { updater.pendingLines.count == 1 })
+        _ = await session.stop()
+        #expect(session.liveNotes == nil)
+        updater.add(TranscriptLine(channel: .meeting, speaker: .others, text: "x", start: 0, end: 1))
+        #expect(updater.pendingLines.count == 1)
+    }
+
     @Test func secondMeetingCannotStart() async throws {
         let session = makeSession()
         try session.begin(config)

@@ -100,6 +100,7 @@ struct LiveMeetingView: View {
         case .resumedAfterSleep: "moon.zzz"
         case .micChanged: "mic"
         case .speakerOutput: "speaker.wave.2"
+        case .liveNotesDelayed: "wifi.slash"
         case .error: "exclamationmark.triangle"
         }
     }

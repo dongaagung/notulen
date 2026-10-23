@@ -9,9 +9,9 @@ struct PromptTemplate: Sendable {
         var errorDescription: String? {
             switch self {
             case .notFound(let name):
-                "Prompt template prompts/\(name).md is missing from the app bundle."
+                "Template prompt prompts/\(name).md tidak ada di app."
             case .missingVariables(let template, let names):
-                "Prompt \(template) needs values for: \(names.joined(separator: ", "))."
+                "Prompt \(template) butuh nilai untuk: \(names.joined(separator: ", "))."
             }
         }
     }

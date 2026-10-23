@@ -49,6 +49,9 @@ final class MeetingSession {
     /// How long the Mac slept, while the owner is asked whether to record on.
     /// Nothing records until `answerWake(continueRecording:)`.
     private(set) var wakeQuestion: TimeInterval?
+    /// Writes the live notes while recording; nil without a usable AI
+    /// provider (the live view then shows `store.aiProblem`).
+    private(set) var liveNotes: LiveNotesUpdater?
     /// The meeting looks over: offer to finish it. Recording goes on.
     private(set) var offersFinish = false
     /// When the owner had the mic off. The meeting audio records on meanwhile.
@@ -275,6 +278,7 @@ final class MeetingSession {
         watchOutputRoute(devices.output)
         phase = .recording
         power.begin()
+        startLiveNotes()
         startMonitoring()
     }
 
@@ -297,6 +301,7 @@ final class MeetingSession {
         phase = .stopping
         wakeQuestion = nil
         offersFinish = false
+        liveNotes?.stop()
         haltCapture()
         // Capture that stopped for sleep may still be draining.
         await sleepDrain?.value
@@ -314,6 +319,8 @@ final class MeetingSession {
         if let meeting { store.save(meeting) }
         journal?.close()
         journal = nil
+        liveNotes = nil
+        notices.removeAll { $0 == .liveNotesDelayed }
         power.end()
         // Task 17 hands the buffer to the finisher instead.
         meetingAudio.wipe()
@@ -562,6 +569,7 @@ final class MeetingSession {
         } catch {
             post(.error("Transkrip tidak bisa disimpan: \(error.localizedDescription)"))
         }
+        liveNotes?.add(line)
     }
 
     // MARK: Sleep
@@ -654,7 +662,45 @@ final class MeetingSession {
                 try? await Task.sleep(for: .seconds(10))
                 guard let self, !Task.isCancelled, phase == .recording else { return }
                 checkMeeting()
+                await updateLiveNotes()
             }
+        }
+    }
+
+    /// Makes the live notes updater once the meeting records, if an AI
+    /// provider is ready. A wake or resume keeps the one it has.
+    private func startLiveNotes() {
+        guard liveNotes == nil, let snapshot = meeting, let client = store.aiClient() else { return }
+        let template: PromptTemplate
+        do {
+            template = try PromptTemplate.load("live_notes")
+        } catch {
+            post(.error(error.localizedDescription))
+            return
+        }
+        let updater = LiveNotesUpdater(
+            client: client, template: template, meeting: { [weak self] in self?.meeting ?? snapshot },
+            start: now())
+        updater.onUpdate = { [weak self] notes, date in
+            guard let self else { return }
+            meeting?.liveNotes = notes
+            meeting?.liveNotesUpdatedAt = date
+            if let meeting { store.save(meeting) }
+        }
+        updater.onError = { [weak self] in self?.post(.error($0)) }
+        liveNotes = updater
+    }
+
+    /// Asks the live notes for an update when one is due; internal for tests.
+    /// Not while the Mac sleeps or the owner is asked what to do after it.
+    func updateLiveNotes() async {
+        guard phase == .recording, sleptAt == nil, !asleep, let liveNotes else { return }
+        await liveNotes.updateIfDue(now: now())
+        guard phase == .recording, self.liveNotes === liveNotes else { return }
+        if liveNotes.isDelayed {
+            post(.liveNotesDelayed)
+        } else {
+            notices.removeAll { $0 == .liveNotesDelayed }
         }
     }
 

@@ -196,3 +196,42 @@ func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async -
     }
     return true
 }
+
+/// Answers requests from `replies` in order; the last reply repeats once
+/// the queue runs out.
+final class FakeLLMClient: LLMClient, @unchecked Sendable {
+    let providerName = "Fake"
+    private let lock = NSLock()
+    private var replies: [Result<String, any Error>]
+    private var recorded: [LLMRequest] = []
+
+    init(replies: [Result<String, any Error>]) { self.replies = replies }
+
+    convenience init(reply: String) { self.init(replies: [.success(reply)]) }
+
+    private(set) var requests: [LLMRequest] {
+        get { lock.withLock { recorded } }
+        set { lock.withLock { recorded = newValue } }
+    }
+
+    func complete(_ request: LLMRequest) async throws -> String {
+        let reply: Result<String, any Error> = lock.withLock {
+            recorded.append(request)
+            return replies.count > 1 ? replies.removeFirst() : replies[0]
+        }
+        return try reply.get()
+    }
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<String, any Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    continuation.yield(try await complete(request))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+}
