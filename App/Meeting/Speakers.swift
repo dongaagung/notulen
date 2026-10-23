@@ -28,6 +28,56 @@ extension Meeting {
         let name = info.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return name.isEmpty ? "Pembicara \(number)" : name
     }
+
+    /// The name the owner gave; empty or blank clears it.
+    mutating func rename(_ id: SpeakerID, to name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        if let index = speakers.firstIndex(where: { $0.id == id }) {
+            speakers[index].name = value
+        } else {
+            speakers.append(SpeakerInfo(id: id, name: value))
+        }
+    }
+
+    /// Counts everything `from` said as `to`. Ignored for itself and for a
+    /// merge that would loop back.
+    mutating func merge(_ from: SpeakerID, into to: SpeakerID) {
+        guard from != to, resolved(to) != from else { return }
+        merges.append(SpeakerMerge(from: from, to: to))
+    }
+
+    /// Speakers in `candidates` that `id` can be merged into: not itself
+    /// (after merges), none twice, none that would loop.
+    func mergeTargets(for id: SpeakerID, among candidates: [SpeakerID]) -> [SpeakerID] {
+        var seen: Set<SpeakerID> = [resolved(id)]
+        return candidates.map { resolved($0) }.filter { target in
+            resolved(target) != id && seen.insert(target).inserted
+        }
+    }
+
+    /// The longest lines the speaker said, in time order.
+    func sampleLines(for id: SpeakerID, in lines: [TranscriptLine], count: Int = 3) -> [TranscriptLine] {
+        let target = resolved(id)
+        let longest = lines.filter { speaker(of: $0) == target }
+            .sorted { $0.text.count > $1.text.count }
+            .prefix(max(count, 0))
+        return longest.sorted { $0.start < $1.start }
+    }
+
+    /// AI text with the speakers' current names in place of their tokens.
+    func named(_ text: String) -> String {
+        SpeakerTokens.render(text) { displayName(for: $0) }
+    }
+
+    /// The owner always has a name; a remote speaker once renamed.
+    func hasName(_ id: SpeakerID) -> Bool {
+        let id = resolved(id)
+        if id == .me { return true }
+        guard id.remoteNumber != nil else { return false }
+        let name = speakers.first { $0.id == id }?.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !name.isEmpty
+    }
 }
 
 /// AI text names speakers as [[s3]], [[me]], [[others]]; this swaps in the

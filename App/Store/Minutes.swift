@@ -79,15 +79,25 @@ struct Minutes: Codable, Equatable, Sendable {
 
     /// Times clamped to the meeting, owners and hints naming speakers the
     /// meeting doesn't have dropped (an owner's `name` stays), topics in order,
-    /// none ending before it starts. Name hints are for remote speakers only:
+    /// none ending before it starts, action item IDs unique. Name hints are for remote speakers only:
     /// the owner is always "Saya".
     func sanitized(duration: TimeInterval, knownSpeakers: Set<SpeakerID>) -> Minutes {
         func clamp(_ time: Double) -> Double { min(max(time, 0), max(duration, 0)) }
         var result = self
         result.decisions = decisions.map { var item = $0; item.at = clamp(item.at); return item }
+        // Repeated IDs get a suffix ("a2", "a2-2"), so ticking one item
+        // doesn't tick its twin.
+        var usedIDs: Set<String> = []
         result.actionItems = actionItems.map { source in
             var item = source
             item.at = clamp(item.at)
+            var unique = item.id
+            var n = 2
+            while !usedIDs.insert(unique).inserted {
+                unique = "\(item.id)-\(n)"
+                n += 1
+            }
+            item.id = unique
             if let speaker = item.owner?.speaker, !knownSpeakers.contains(speaker) {
                 item.owner?.speaker = nil
             }

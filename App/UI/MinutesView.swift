@@ -25,11 +25,15 @@ struct MinutesView: View {
     @ViewState private var title: String
     @FocusState private var editsTitle: Bool
     @ViewState private var confirmsRegenerate = false
+    @ViewState private var renamesSpeakers = false
+    /// The journal has been read, so an empty `lines` means nothing was said.
+    @ViewState private var linesLoaded = false
     /// The page's width, for `LiveMeetingView.sidePadding(forWidth:)`.
     @ViewState private var width = CGFloat.infinity
 
     static let regenerateTitle = "Buat ulang notulen?"
     static let regenerateMessage = "Centang action item dan terjemahan yang ada akan dihapus."
+    static let notStarted = "Rekaman tidak sempat dimulai."
     static let nothingRecorded = "Tidak ada percakapan yang terekam."
 
     init(meeting: Meeting) {
@@ -92,6 +96,9 @@ struct MinutesView: View {
         }
         .onChange(of: tab) { editsTitle = false }
         .onDisappear { saveTitle() }
+        .sheet(isPresented: $renamesSpeakers) {
+            RenameSpeakersSheet(meetingID: meeting.id, lines: lines)
+        }
         .confirmationDialog(Self.regenerateTitle, isPresented: $confirmsRegenerate, titleVisibility: .visible) {
             Button("Buat Ulang", role: .destructive) { regenerate() }
             Button("Batal", role: .cancel) {}
@@ -112,7 +119,7 @@ struct MinutesView: View {
                 titleField
                     .padding(.top, 6 * scale)
                     .padding(.bottom, 12 * scale)
-                ParticipantChips(meeting: meeting, lines: lines)
+                participants
                     .padding(.bottom, 30 * scale)
                 content
             }
@@ -125,6 +132,17 @@ struct MinutesView: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .textScalePinch(textScale)
         .background { Color.canvas.ignoresSafeArea() }
+    }
+
+    private var participants: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            ParticipantChips(meeting: meeting, lines: lines)
+            if !RenameSpeakersSheet.speakers(of: meeting, lines: lines).isEmpty {
+                Button("Ganti nama…") { renamesSpeakers = true }
+                    .buttonStyle(.link)
+                    .font(.scaled(.callout, scale))
+            }
+        }
     }
 
     private var titleField: some View {
@@ -150,7 +168,14 @@ struct MinutesView: View {
             }
         case .failed, .processing:
             // Processing here means no finisher runs for it any more.
-            failure(meeting.failure ?? AppStore.minutesCutOff)
+            VStack(alignment: .leading, spacing: 30 * scale) {
+                failure(meeting.failure ?? AppStore.minutesCutOff)
+                // A failed rewrite leaves the earlier minutes worth reading.
+                if let minutes = meeting.minutes {
+                    MinutesSections(
+                        minutes: minutes, meeting: meeting, jump: { jump(to: $0) }, toggle: { toggle($0) })
+                }
+            }
         case .interrupted, .recording:
             interrupted
         }
@@ -164,12 +189,14 @@ struct MinutesView: View {
                 .font(.scaled(.body, scale))
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-            Text("Transkripnya tetap utuh di tab Transkrip.")
+            Text(hasTranscript ? "Transkripnya tetap utuh di tab Transkrip." : Self.notStarted)
                 .font(.scaled(.callout, scale))
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                Button("Coba lagi") { regenerate() }
-                    .buttonStyle(.borderedProminent)
+                if hasTranscript {
+                    Button("Coba lagi") { regenerate() }
+                        .buttonStyle(.borderedProminent)
+                }
                 if store.aiProblem != nil {
                     SettingsLink { Text("Buka Pengaturan…") }
                 }
@@ -177,6 +204,9 @@ struct MinutesView: View {
             .padding(.top, 4 * scale)
         }
     }
+
+    /// False only once the journal has been read and is empty.
+    private var hasTranscript: Bool { !linesLoaded || !lines.isEmpty }
 
     /// Left by a crash or quit, and neither resumed nor finished at launch.
     private var interrupted: some View {
@@ -290,6 +320,7 @@ struct MinutesView: View {
 
     private func loadTranscript() async {
         guard let url = store.transcriptURL(for: meeting.id) else { return }
+        defer { linesLoaded = true }
         do {
             lines = try await Task.detached {
                 guard FileManager.default.fileExists(atPath: url.path) else { return [] }

@@ -103,6 +103,15 @@ struct MinutesTests {
         #expect(clean.speakerNameHints.map(\.name) == ["Cici"])
     }
 
+    @Test func sanitizeMakesActionItemIDsUnique() {
+        let item = { (id: String) in Minutes.ActionItem(id: id, task: "t", owner: nil, due: nil, at: 0) }
+        let minutes = Minutes(
+            titleSuggestion: "T", summary: "S", actionItems: ["a1", "a2", "a2", "a2", "a2-2"].map(item))
+        let ids = minutes.sanitized(duration: 10, knownSpeakers: []).actionItems.map(\.id)
+        #expect(ids == ["a1", "a2", "a2-2", "a2-3", "a2-2-2"])
+        #expect(Set(ids).count == ids.count)
+    }
+
     /// A topic never ends before it starts, also after clamping.
     @Test func sanitizeKeepsTopicEndsAfterStarts() {
         let minutes = Minutes(

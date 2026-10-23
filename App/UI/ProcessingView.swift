@@ -3,6 +3,7 @@ import SwiftUI
 /// While the minutes are written: the finisher's steps, done ones ticked,
 /// the current one spinning.
 struct ProcessingView: View {
+    @Environment(\.textScale) private var scale
     let meeting: Meeting
     let step: MeetingFinisher.Step
     /// This run's steps, in order.
@@ -12,8 +13,9 @@ struct ProcessingView: View {
         VStack(spacing: 22) {
             VStack(spacing: 6) {
                 Text("Membuat notulen")
-                    .font(.title2.weight(.semibold))
+                    .font(.scaled(.title2, scale, weight: .semibold))
                 Text("Biasanya selesai dalam 1–2 menit.")
+                    .font(.scaled(.body, scale))
                     .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 10) {
@@ -42,6 +44,7 @@ struct ProcessingView: View {
             .frame(width: 18, height: 18)
             .accessibilityHidden(true)
             Text(item.label)
+                .font(.scaled(.body, scale))
                 .foregroundStyle(index > current ? .secondary : .primary)
         }
     }

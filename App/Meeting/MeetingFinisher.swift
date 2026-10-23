@@ -79,7 +79,8 @@ final class MeetingFinisher {
     }
 
     /// Writes the minutes again, as after merging speakers or a failure.
-    /// Ticked action items and translations go: the new items have new IDs.
+    /// Ticked action items and translations go: the new items usually reuse
+    /// IDs like a1, a2, so old ticks would land on different tasks.
     /// The speakers stay as they are: the audio is long gone.
     func regenerate(_ id: UUID) async {
         guard running[id] == nil, var meeting = store.meeting(id) else { return }

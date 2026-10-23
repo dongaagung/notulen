@@ -81,4 +81,58 @@ struct SpeakerTests {
         let out = TranscriptFormatter.aiTranscript(lines: [late, early], meeting: meeting())
         #expect(out.range(of: "Pertama")!.lowerBound < out.range(of: "Kedua")!.lowerBound)
     }
+
+    @Test func renameTrimsAndClears() {
+        var m = meeting(speakers: [SpeakerInfo(id: .remote(1), name: nil)])
+        m.rename(.remote(1), to: "  Andi ")
+        #expect(m.displayName(for: .remote(1)) == "Andi")
+        m.rename(.remote(1), to: "")
+        #expect(m.displayName(for: .remote(1)) == "Pembicara 1")
+        m.rename(.remote(1), to: "  \n ")
+        #expect(m.speakers.first { $0.id == .remote(1) }?.name == nil)
+    }
+
+    @Test func renameAddsMissingSpeaker() {
+        var m = meeting()
+        m.rename(.remote(2), to: "Rina")
+        #expect(m.displayName(for: .remote(2)) == "Rina")
+        #expect(m.speakers.count == 1)
+    }
+
+    @Test func mergeFollowsChains() {
+        var m = meeting(speakers: [1, 2, 3].map { SpeakerInfo(id: .remote($0), name: nil) })
+        m.merge(.remote(3), into: .remote(2))
+        m.merge(.remote(2), into: .remote(1))
+        #expect(m.speaker(of: line(.remote(3), "x", start: 0)) == .remote(1))
+    }
+
+    @Test func mergeLoopIsIgnored() {
+        var m = meeting()
+        m.merge(.remote(1), into: .remote(2))
+        m.merge(.remote(2), into: .remote(1))
+        m.merge(.remote(1), into: .remote(1))
+        #expect(m.merges == [SpeakerMerge(from: .remote(1), to: .remote(2))])
+        m.merge(.remote(3), into: .remote(1))
+        m.merge(.remote(2), into: .remote(3))
+        #expect(m.merges.count == 2)
+    }
+
+    @Test func sampleLinesPickLongest() {
+        let m = meeting(merges: [SpeakerMerge(from: .remote(2), to: .remote(1))])
+        let lines = [
+            line(.remote(1), "pendek", start: 1), line(.remote(1), "ini kalimat yang paling panjang sekali", start: 2),
+            line(.remote(2), "sedang saja kalimatnya", start: 3), line(.remote(3), "lain", start: 4),
+            line(.remote(1), "ok", start: 5),
+        ]
+        let picked = m.sampleLines(for: .remote(1), in: lines, count: 2)
+        #expect(picked.map(\.start) == [2, 3])
+        #expect(m.sampleLines(for: .remote(3), in: lines).count == 1)
+    }
+
+    @Test func mergeTargetsExcludeSelfAndLoops() {
+        var m = meeting(speakers: [1, 2, 3].map { SpeakerInfo(id: .remote($0), name: nil) })
+        m.merge(.remote(2), into: .remote(1))
+        #expect(m.mergeTargets(for: .remote(1), among: [.remote(1), .remote(2), .remote(3)]) == [.remote(3)])
+        #expect(m.mergeTargets(for: .remote(3), among: [.remote(1), .remote(3)]) == [.remote(1)])
+    }
 }
