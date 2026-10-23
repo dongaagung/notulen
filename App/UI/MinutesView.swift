@@ -26,6 +26,9 @@ struct MinutesView: View {
     @FocusState private var editsTitle: Bool
     @ViewState private var confirmsRegenerate = false
     @ViewState private var renamesSpeakers = false
+    /// The language shown, a BCP 47 code; "id" is the minutes as written.
+    @ViewState private var language = "id"
+    @ViewState private var choosesLanguage = false
     /// "Disalin" shows for a moment after the minutes were copied.
     @ViewState private var copied = false
     /// The journal has been read, so an empty `lines` means nothing was said.
@@ -35,6 +38,11 @@ struct MinutesView: View {
 
     static let regenerateTitle = "Buat ulang notulen?"
     static let regenerateMessage = "Centang action item dan terjemahan yang ada akan dihapus."
+    /// The "Terjemahkan ke" menu: name and code.
+    static let translationLanguages: [(name: String, code: String)] = [
+        ("Inggris", "en"), ("Mandarin", "zh-Hans"), ("Jepang", "ja"), ("Korea", "ko"), ("Arab", "ar"),
+        ("Belanda", "nl"), ("Jerman", "de"), ("Prancis", "fr"), ("Spanyol", "es"),
+    ]
     static let notStarted = "Rekaman tidak sempat dimulai."
     static let nothingRecorded = "Tidak ada percakapan yang terekam."
 
@@ -119,6 +127,9 @@ struct MinutesView: View {
         .sheet(isPresented: $renamesSpeakers) {
             RenameSpeakersSheet(meetingID: meeting.id, lines: lines)
         }
+        .sheet(isPresented: $choosesLanguage) {
+            LanguageCodeSheet { translate(to: $0) }
+        }
         .confirmationDialog(Self.regenerateTitle, isPresented: $confirmsRegenerate, titleVisibility: .visible) {
             Button("Buat Ulang", role: .destructive) { regenerate() }
             Button("Batal", role: .cancel) {}
@@ -178,7 +189,7 @@ struct MinutesView: View {
     private var content: some View {
         switch meeting.status {
         case .ready:
-            if let minutes = meeting.minutes {
+            if let minutes = shownMinutes {
                 MinutesSections(
                     minutes: minutes, meeting: meeting, jump: { jump(to: $0) }, toggle: { toggle($0) })
             } else {
@@ -191,7 +202,7 @@ struct MinutesView: View {
             VStack(alignment: .leading, spacing: 30 * scale) {
                 failure(meeting.failure ?? AppStore.minutesCutOff)
                 // A failed rewrite leaves the earlier minutes worth reading.
-                if let minutes = meeting.minutes {
+                if let minutes = shownMinutes {
                     MinutesSections(
                         minutes: minutes, meeting: meeting, jump: { jump(to: $0) }, toggle: { toggle($0) })
                 }
@@ -199,6 +210,15 @@ struct MinutesView: View {
         case .interrupted, .recording:
             interrupted
         }
+    }
+
+    /// The translation for the language shown, else the minutes as written.
+    private var shownLanguage: String {
+        meeting.translations[language] != nil ? language : "id"
+    }
+
+    private var shownMinutes: Minutes? {
+        meeting.translations[shownLanguage] ?? meeting.minutes
     }
 
     private func failure(_ reason: String) -> some View {
@@ -267,11 +287,29 @@ struct MinutesView: View {
             .labelsHidden()
             .fixedSize()
         }
+        if finisher.translating[meeting.id] != nil {
+            ToolbarItem(placement: .primaryAction) {
+                ProgressView().controlSize(.small).help("Menerjemahkan…")
+            }
+        }
+        if !meeting.translations.isEmpty {
+            ToolbarItem(placement: .primaryAction) { languagePicker }
+        }
         ToolbarItem(placement: .primaryAction) { TextSizeControl(scale: textScale) }
         ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItem(placement: .primaryAction) { shareMenu }
         ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItem(placement: .primaryAction) { moreMenu }
+    }
+
+    private var languagePicker: some View {
+        Picker("Bahasa", selection: Binding { shownLanguage } set: { language = $0 }) {
+            Text("Bahasa Indonesia").tag("id")
+            ForEach(meeting.translations.keys.sorted(), id: \.self) { code in
+                Text(Translator.languageName(code).map { "Bahasa \($0)" } ?? code).tag(code)
+            }
+        }
+        .help("Bahasa notulen")
     }
 
     /// PDF and Notion come in later tasks.
@@ -288,6 +326,14 @@ struct MinutesView: View {
 
     private var moreMenu: some View {
         Menu {
+            Menu("Terjemahkan ke") {
+                ForEach(Self.translationLanguages, id: \.code) { item in
+                    Button(item.name) { translate(to: item.code) }
+                }
+                Divider()
+                Button("Bahasa lain…") { choosesLanguage = true }
+            }
+            .disabled(!canTranslate)
             Button("Buat ulang notulen") { confirmsRegenerate = true }
                 .disabled(!canRegenerate)
             if meeting.minutes != nil, let problem = store.aiProblem {
@@ -301,8 +347,11 @@ struct MinutesView: View {
     }
 
     private var canRegenerate: Bool {
-        meeting.status == .ready && meeting.minutes != nil && store.isAIReady && finisher.running[meeting.id] == nil
+        meeting.status == .ready && meeting.minutes != nil && store.isAIReady
+            && finisher.running[meeting.id] == nil && finisher.translating[meeting.id] == nil
     }
+
+    private var canTranslate: Bool { canRegenerate }
 
     // MARK: Actions
 
@@ -311,11 +360,19 @@ struct MinutesView: View {
     }
 
     private func copyMarkdown() {
-        guard let minutes = meeting.minutes else { return }
+        guard let minutes = shownMinutes else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(MinutesMarkdown.render(minutes, meeting: meeting), forType: .string)
         copied = true
+    }
+
+    private func translate(to code: String) {
+        let id = meeting.id
+        Task {
+            await finisher.translate(id, to: code)
+            if store.meeting(id)?.translations[code] != nil { language = code }
+        }
     }
 
     private func jump(to time: TimeInterval) {

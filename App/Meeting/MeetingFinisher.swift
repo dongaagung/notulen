@@ -31,25 +31,38 @@ final class MeetingFinisher {
     private let store: AppStore
     private let diarizer: (any SpeakerDiarizing)?
     private let writer: @MainActor () -> MinutesWriter?
+    private let translator: @MainActor () -> Translator?
+    /// Translations being made, by meeting ID: the language's code. Apart
+    /// from `running`, so the minutes stay on screen meanwhile.
+    private(set) var translating: [UUID: String] = [:]
 
     /// `diarizer` is nil without diarization models: the meeting's lines
     /// then stay "Lainnya". `writer` is nil while the AI provider isn't
     /// ready.
-    init(store: AppStore, diarizer: (any SpeakerDiarizing)?, writer: @escaping @MainActor () -> MinutesWriter?) {
+    init(
+        store: AppStore, diarizer: (any SpeakerDiarizing)?, writer: @escaping @MainActor () -> MinutesWriter?,
+        translator: @escaping @MainActor () -> Translator? = { nil }
+    ) {
         self.store = store
         self.diarizer = diarizer
         self.writer = writer
+        self.translator = translator
     }
 
     /// Separates speakers with the bundled models, if the app has them, and
     /// writes with the active provider's smart model and prompts/minutes.md.
     convenience init(store: AppStore, diarizer: (any SpeakerDiarizing)? = SpeakerDiarizer.bundled()) {
-        self.init(store: store, diarizer: diarizer) {
+        self.init(store: store, diarizer: diarizer, writer: {
             guard let client = store.aiClient(), let template = try? PromptTemplate.load("minutes") else {
                 return nil
             }
             return MinutesWriter(client: client, template: template)
-        }
+        }, translator: {
+            guard let client = store.aiClient(), let template = try? PromptTemplate.load("translate") else {
+                return nil
+            }
+            return Translator(client: client, template: template)
+        })
     }
 
     /// The steps the meeting's finish goes through, for showing progress.
@@ -83,12 +96,37 @@ final class MeetingFinisher {
     /// IDs like a1, a2, so old ticks would land on different tasks.
     /// The speakers stay as they are: the audio is long gone.
     func regenerate(_ id: UUID) async {
-        guard running[id] == nil, var meeting = store.meeting(id) else { return }
+        guard running[id] == nil, translating[id] == nil, var meeting = store.meeting(id) else { return }
         defer { running[id] = nil }
         meeting.actionItemsDone = []
         meeting.translations = [:]
         store.save(meeting)
         await writeMinutes(id)
+    }
+
+    /// Translates the meeting's minutes into `language` (BCP 47) and keeps
+    /// the result in `translations[language]`, replacing an earlier one. One
+    /// at a time per meeting, and not while its minutes are being written.
+    /// A failure goes to `store.lastError`. A result is dropped when the
+    /// minutes were rewritten meanwhile: it would translate old text.
+    func translate(_ id: UUID, to language: String) async {
+        guard running[id] == nil, translating[id] == nil, let meeting = store.meeting(id),
+              let source = meeting.minutes
+        else { return }
+        guard let translator = translator() else {
+            store.lastError = store.aiProblem ?? "AI belum bisa dipakai. Periksa Pengaturan."
+            return
+        }
+        translating[id] = language
+        defer { translating[id] = nil }
+        do {
+            let result = try await translator.translate(source, to: language)
+            guard var latest = store.meeting(id), latest.minutes == source else { return }
+            latest.translations[language] = result
+            store.save(latest)
+        } catch {
+            store.lastError = "Terjemahan gagal: \(error.localizedDescription)"
+        }
     }
 
     /// Gives the meeting's lines the speakers heard in its audio. When that
