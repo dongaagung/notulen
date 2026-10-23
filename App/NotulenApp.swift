@@ -108,30 +108,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         super.init()
     }
 
-    /// While recording, asks first. Keluar saves the meeting as interrupted
-    /// (the next launch offers to resume it), then quits.
+    /// Asks first while quitting would lose something: a meeting being
+    /// recorded (Keluar saves it as interrupted, to resume at the next
+    /// launch), or speaker separation still running (the meeting audio is
+    /// only in RAM). Writing minutes just stops: the next launch offers Coba
+    /// lagi.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         switch session.phase {
-        case .idle:
-            return .terminateNow
-        case .starting:
-            // Nothing recorded yet.
-            session.cancelStart()
-            return .terminateNow
-        case .stopping:
-            Task {
-                await saveBeforeQuitting()
-                NSApp.reply(toApplicationShouldTerminate: true)
+        case .idle, .starting:
+            guard separatesSpeakers else {
+                // A start still getting ready has recorded nothing yet.
+                session.cancelStart()
+                return .terminateNow
             }
-            return .terminateLater
-        case .recording:
-            Task {
-                let quit = await confirmQuit()
-                if quit { await saveBeforeQuitting() }
-                NSApp.reply(toApplicationShouldTerminate: quit)
-            }
-            return .terminateLater
+        case .recording, .stopping:
+            break
         }
+        Task {
+            let quit = await confirmQuit()
+            if quit { await saveBeforeQuitting() }
+            NSApp.reply(toApplicationShouldTerminate: quit)
+        }
+        return .terminateLater
+    }
+
+    /// One question before quitting: Keluar or Batal.
+    struct QuitQuestion: Equatable {
+        var message: String
+        var detail: String?
+    }
+
+    /// What to ask before quitting, in order: whether to stop the recording,
+    /// then whether to stop telling speakers apart. None: quit at once.
+    static func quitQuestions(recording: Bool, steps: some Sequence<MeetingFinisher.Step>) -> [QuitQuestion] {
+        var questions: [QuitQuestion] = []
+        if recording {
+            questions.append(QuitQuestion(message: "Meeting sedang direkam. Keluar sekarang?"))
+        }
+        if steps.contains(.separatingSpeakers) {
+            questions.append(QuitQuestion(
+                message: "Pemisahan pembicara sedang berjalan. Keluar sekarang?",
+                detail: "Semua suara peserta akan berlabel “Lainnya”."))
+        }
+        return questions
+    }
+
+    private var separatesSpeakers: Bool {
+        finisher.running.values.contains(.separatingSpeakers)
+    }
+
+    /// Asks each question quitting raises now; false once the owner picks
+    /// Batal.
+    private func confirmQuit() async -> Bool {
+        // Selesai is saving the meeting (3 s at most); separating its
+        // speakers comes next.
+        while session.phase == .stopping { try? await Task.sleep(for: .milliseconds(100)) }
+        let questions = Self.quitQuestions(recording: session.phase == .recording, steps: finisher.running.values)
+        for question in questions {
+            guard await ask(question) else { return false }
+        }
+        return true
     }
 
     /// Leaves the meeting saved, whatever the session got to while the
@@ -151,9 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func confirmQuit() async -> Bool {
+    /// True for Keluar.
+    private func ask(_ question: QuitQuestion) async -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Meeting sedang direkam. Keluar sekarang?"
+        alert.messageText = question.message
+        if let detail = question.detail { alert.informativeText = detail }
         alert.addButton(withTitle: "Keluar")
         alert.addButton(withTitle: "Batal").keyEquivalent = "\u{1b}"
         if let window = NSApp.mainWindow ?? NSApp.windows.first(where: \.isVisible) {
