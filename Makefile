@@ -1,6 +1,7 @@
 # Builds with Command Line Tools + SwiftPM only (no Xcode).
 # macOS ships GNU Make 3.81 (no .SHELLFLAGS), so pipefail is set per recipe.
 SHELL := /bin/bash
+.DEFAULT_GOAL := build
 
 NAME    := Notulen
 SUPPORT := App/Support
@@ -40,7 +41,7 @@ endef
 
 .PHONY: build run test install uninstall icon models
 
-$(MODELS):
+$(MODELS): scripts/fetch-models.sh
 	scripts/fetch-models.sh
 
 # Forces a fresh download.

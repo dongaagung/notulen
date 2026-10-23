@@ -22,8 +22,10 @@ for model in Segmentation FBank Embedding PldaRho; do
         fetch "$model.mlmodelc/$file"
     done
 done
-for file in plda-parameters.json LICENSE NOTICE.md; do
-    fetch "$file"
+fetch plda-parameters.json
+# Notices are nice to have; the attribution text in About carries the notice anyway.
+for file in LICENSE NOTICE.md; do
+    fetch "$file" || echo "warning: $file not downloaded; continuing" >&2
 done
 
 # FluidAudio refuses to load a folder without its revision marker.
