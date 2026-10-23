@@ -11,6 +11,8 @@ final class LiveNotesUpdater {
     static let interval: TimeInterval = 150
     /// This many pending lines make an update due before `interval`.
     static let earlyLineCount = 40
+    /// The most lines one request carries, oldest first; the rest wait.
+    static let maxLinesPerRequest = 200
 
     private(set) var notes: LiveNotes?
     private(set) var updatedAt: Date?
@@ -28,6 +30,8 @@ final class LiveNotesUpdater {
     @ObservationIgnored private let template: PromptTemplate
     @ObservationIgnored private let meeting: () -> Meeting
     @ObservationIgnored private var lastAttempt: Date
+    /// After a failure the early trigger waits out the normal interval.
+    @ObservationIgnored private var lastSucceeded = true
     @ObservationIgnored private var inFlight = false
     @ObservationIgnored private var stopped = false
 
@@ -58,13 +62,14 @@ final class LiveNotesUpdater {
     func updateIfDue(now: Date) async {
         guard !stopped, !inFlight, !pendingLines.isEmpty else { return }
         let due = now.timeIntervalSince(lastAttempt) >= Self.interval
-            || pendingLines.count >= Self.earlyLineCount
+            || (lastSucceeded && pendingLines.count >= Self.earlyLineCount)
         guard due else { return }
         lastAttempt = now
+        lastSucceeded = false
         inFlight = true
         defer { inFlight = false }
 
-        let sent = pendingLines
+        let sent = Array(pendingLines.prefix(Self.maxLinesPerRequest))
         do {
             let reply = try await client.complete(try request(for: sent))
             guard !stopped else { return }
@@ -76,12 +81,14 @@ final class LiveNotesUpdater {
             updatedAt = now
             pendingLines.removeFirst(min(sent.count, pendingLines.count))
             isDelayed = false
+            lastSucceeded = true
             onUpdate?(updated, now)
         } catch is URLError {
             guard !stopped else { return }
             isDelayed = true
         } catch {
             guard !stopped else { return }
+            isDelayed = false
             onError?(error.localizedDescription)
         }
     }

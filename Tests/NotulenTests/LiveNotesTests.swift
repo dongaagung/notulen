@@ -133,3 +133,132 @@ struct LiveNotesTests {
         #expect(updater.notes?.currentTopic == nil)
     }
 }
+
+/// Holds each request until the test lets it answer.
+private final class GatedLLMClient: LLMClient, @unchecked Sendable {
+    let providerName = "Gated"
+    private let lock = NSLock()
+    private var waiting: [CheckedContinuation<String, Never>] = []
+    private var recorded: [LLMRequest] = []
+    var requests: [LLMRequest] { lock.withLock { recorded } }
+    var waitingCount: Int { lock.withLock { waiting.count } }
+
+    func complete(_ request: LLMRequest) async throws -> String {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                recorded.append(request)
+                waiting.append(continuation)
+            }
+        }
+    }
+
+    func release(_ reply: String) {
+        let next = lock.withLock { waiting.isEmpty ? nil : waiting.removeFirst() }
+        next?.resume(returning: reply)
+    }
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<String, any Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+
+@MainActor
+struct LiveNotesBackoffTests {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func fill(_ updater: LiveNotesUpdater, _ count: Int) {
+        for index in 0..<count { updater.add(line("l\(index)", at: TimeInterval(index))) }
+    }
+
+    @Test func failureWithManyPendingWaitsForTheInterval() async throws {
+        let client = FakeLLMClient(replies: [.failure(URLError(.notConnectedToInternet)), .success(notesJSON("A"))])
+        let updater = try makeUpdater(client, start: t0)
+        fill(updater, 45)
+        await updater.updateIfDue(now: t0.addingTimeInterval(10))
+        #expect(client.requests.count == 1)
+        await updater.updateIfDue(now: t0.addingTimeInterval(20))
+        #expect(client.requests.count == 1)
+        await updater.updateIfDue(now: t0.addingTimeInterval(159))
+        #expect(client.requests.count == 1)
+        await updater.updateIfDue(now: t0.addingTimeInterval(160))
+        #expect(client.requests.count == 2)
+    }
+
+    @Test func persistentErrorDoesNotRepeatEveryTick() async throws {
+        let client = FakeLLMClient(replies: [.failure(ClaudeClient.Failure.refusal)])
+        let updater = try makeUpdater(client, start: t0)
+        var errors = 0
+        updater.onError = { _ in errors += 1 }
+        fill(updater, 45)
+        for tick in 1...10 { await updater.updateIfDue(now: t0.addingTimeInterval(TimeInterval(tick * 10))) }
+        #expect(client.requests.count == 1 && errors == 1)
+    }
+
+    @Test func requestsCarryAtMostTheCapOldestFirst() async throws {
+        let client = FakeLLMClient(reply: notesJSON("A"))
+        let updater = try makeUpdater(client, start: t0)
+        fill(updater, 450)
+        await updater.updateIfDue(now: t0.addingTimeInterval(150))
+        let content = client.requests[0].messages[0].content
+        #expect(content.components(separatedBy: "\n").filter { $0.contains("] Lainnya: l") }.count == 200)
+        #expect(content.contains("Lainnya: l199") && !content.contains("Lainnya: l200"))
+        #expect(updater.pendingLines.count == 250)
+        // The last attempt succeeded, so the early trigger applies again.
+        await updater.updateIfDue(now: t0.addingTimeInterval(160))
+        #expect(client.requests.count == 2)
+    }
+
+    @Test func otherErrorClearsDelayed() async throws {
+        let client = FakeLLMClient(replies: [
+            .failure(URLError(.notConnectedToInternet)), .failure(ClaudeClient.Failure.refusal),
+        ])
+        let updater = try makeUpdater(client, start: t0)
+        updater.add(line("a"))
+        await updater.updateIfDue(now: t0.addingTimeInterval(150))
+        #expect(updater.isDelayed)
+        await updater.updateIfDue(now: t0.addingTimeInterval(300))
+        #expect(!updater.isDelayed)
+    }
+
+    @Test func replyAfterStopChangesNothing() async throws {
+        let client = GatedLLMClient()
+        let updater = try makeUpdater2(client)
+        var updates = 0
+        updater.onUpdate = { _, _ in updates += 1 }
+        updater.add(line("a"))
+        let task = Task { await updater.updateIfDue(now: t0.addingTimeInterval(150)) }
+        #expect(await waitUntil { client.waitingCount == 1 })
+        updater.stop()
+        client.release(notesJSON("Late"))
+        await task.value
+        #expect(updater.notes == nil && updates == 0)
+    }
+
+    @Test func linesDuringARequestGoInTheNextOne() async throws {
+        let client = GatedLLMClient()
+        let updater = try makeUpdater2(client)
+        updater.add(line("first"))
+        let task = Task { await updater.updateIfDue(now: t0.addingTimeInterval(150)) }
+        #expect(await waitUntil { client.waitingCount == 1 })
+        updater.add(line("second"))
+        client.release(notesJSON("A"))
+        await task.value
+        #expect(updater.pendingLines.map(\.text) == ["second"])
+        let next = Task { await updater.updateIfDue(now: t0.addingTimeInterval(300)) }
+        #expect(await waitUntil { client.waitingCount == 1 })
+        client.release(notesJSON("B"))
+        await next.value
+        let first = client.requests[0].messages[0].content
+        let second = client.requests[1].messages[0].content
+        #expect(first.contains("first") && !first.contains("second"))
+        #expect(second.contains("second") && !second.contains("Lainnya: first"))
+        #expect(updater.pendingLines.isEmpty)
+    }
+
+    private func makeUpdater2(_ client: some LLMClient) throws -> LiveNotesUpdater {
+        let meeting = Meeting(
+            title: "T", startedAt: t0, status: .recording, language: "id-ID", audioSource: .systemWide)
+        return LiveNotesUpdater(
+            client: client, template: try PromptTemplate.load("live_notes"), meeting: { meeting }, start: t0)
+    }
+}
