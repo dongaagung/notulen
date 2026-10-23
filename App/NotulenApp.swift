@@ -67,19 +67,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             session.cancelStart()
             return .terminateNow
         case .stopping:
-            // Selesai is saving the meeting; quit once it's saved (3 s at most).
             Task {
-                while session.phase == .stopping { try? await Task.sleep(for: .milliseconds(100)) }
+                await saveBeforeQuitting()
                 NSApp.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
         case .recording:
             Task {
                 let quit = await confirmQuit()
-                if quit { await session.interrupt() }
+                if quit { await saveBeforeQuitting() }
                 NSApp.reply(toApplicationShouldTerminate: quit)
             }
             return .terminateLater
+        }
+    }
+
+    /// Leaves the meeting saved, whatever the session got to while the
+    /// owner was asked.
+    private func saveBeforeQuitting() async {
+        switch session.phase {
+        case .idle:
+            break
+        case .starting:
+            // Nothing recorded yet.
+            session.cancelStart()
+        case .recording:
+            await session.interrupt()
+        case .stopping:
+            // Selesai is saving the meeting (3 s at most).
+            while session.phase == .stopping { try? await Task.sleep(for: .milliseconds(100)) }
         }
     }
 

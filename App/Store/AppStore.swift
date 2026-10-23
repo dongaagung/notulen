@@ -113,8 +113,11 @@ final class AppStore {
     }
 }
 
-extension [TranscriptLine] {
-    /// Meeting time where these lines end: where a recording that stopped
-    /// unexpectedly last heard anything. 0 without lines.
-    var recordedUntil: TimeInterval { map(\.end).max() ?? 0 }
+extension Meeting {
+    /// Meeting time a recording that stopped unexpectedly is known to have
+    /// reached: the end of its last line (`lines` is its journal), or of its
+    /// last gap, since recording ran on after that. 0 when it has neither.
+    func recordedUntil(_ lines: [TranscriptLine]) -> TimeInterval {
+        max(lines.map(\.end).max() ?? 0, gaps.map(\.span.end).max() ?? 0)
+    }
 }

@@ -18,10 +18,15 @@ final class RecoveryTests {
     }
 
     /// The clock stands still 300 s after `startedAt`.
-    private func makeSession(_ speech: FakeSpeech = FakeSpeech()) -> MeetingSession {
+    private func makeSession(
+        _ speech: FakeSpeech = FakeSpeech(),
+        audioBuffer: @escaping () -> MeetingAudioBuffer = { MeetingAudioBuffer() }
+    ) -> MeetingSession {
         let devices = CaptureDevices(meeting: meetingCapture, mic: micCapture)
         let now = startedAt.addingTimeInterval(300)
-        return MeetingSession(store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { now })
+        return MeetingSession(
+            store: store, devices: { _ in devices }, speech: { _, _ in speech }, now: { now },
+            audioBuffer: audioBuffer)
     }
 
     private func meeting(_ status: MeetingStatus, startedAt: Date? = nil) -> Meeting {
@@ -35,8 +40,9 @@ final class RecoveryTests {
     }
 
     /// A meeting a crash cut off, saved with `lines` in its journal.
-    private func interruptedMeeting(lines: [TranscriptLine]) throws -> Meeting {
-        let meeting = meeting(.interrupted)
+    private func interruptedMeeting(lines: [TranscriptLine], gaps: [Gap] = []) throws -> Meeting {
+        var meeting = meeting(.interrupted)
+        meeting.gaps = gaps
         store.save(meeting)
         let journal = try TranscriptJournal(url: #require(store.transcriptURL(for: meeting.id)))
         for line in lines { try journal.append(line) }
@@ -101,9 +107,14 @@ final class RecoveryTests {
     /// at the time of the resume and append to the same journal.
     @Test func resumedMeetingRecordsOnInTheSameJournal() async throws {
         let meeting = try interruptedMeeting(lines: [line(0, 60), line(65, 120)])
-        let session = makeSession(FakeSpeech(meeting: [.final("Lanjut", 1, 2)], mic: [.final("Oke", 3, 4)]))
+        let buffer = MeetingAudioBuffer()
+        let session = makeSession(
+            FakeSpeech(meeting: [.final("Lanjut", 1, 2)], mic: [.final("Oke", 3, 4)]), audioBuffer: { buffer })
         try session.resume(meeting)
         #expect(await waitUntil { meetingCapture.isCapturing && micCapture.isCapturing })
+        // The speaker audio starts at the resume. Only `append` writes
+        // to the buffer meanwhile, and it leaves the segments alone.
+        #expect(buffer.meetingTime(ofBufferTime: 0) == 300)
         meetingCapture.send()
         #expect(await waitUntil { session.transcript.lines.count == 3 })
         micCapture.send()
@@ -115,6 +126,42 @@ final class RecoveryTests {
         let lines = try journal(meeting)
         #expect(lines.map(\.text) == ["Baris 0", "Baris 65", "Lanjut", "Oke"])
         #expect(lines.suffix(2).map(\.start) == [301, 303])
+    }
+
+    /// Recording ran on after the last gap even without new lines, so a
+    /// second crash's gap starts where the first one ended.
+    @Test func repeatedCrashGapsDontOverlap() async throws {
+        let first = Gap(span: .init(start: 60, end: 200), reason: .crash)
+        let meeting = try interruptedMeeting(lines: [line(0, 60)], gaps: [first])
+        let session = makeSession()
+        try session.resume(meeting)
+        #expect(session.meeting?.gaps == [first, Gap(span: .init(start: 200, end: 300), reason: .crash)])
+        _ = await session.stop()
+    }
+
+    /// A resume that can't record leaves the meeting as it was, to resume
+    /// or finish later.
+    @Test func resumeWhoseSpeechFailsStaysInterrupted() async throws {
+        try await expectFailedResumeStaysInterrupted(makeSession(FakeSpeech(failsToPrepare: true)))
+    }
+
+    @Test func resumeWithNoWorkingChannelStaysInterrupted() async throws {
+        meetingCapture.startError = ProcessTapCapture.Failure.unsupportedFormat
+        micCapture.startError = MicCapture.Failure.noInputDevice
+        try await expectFailedResumeStaysInterrupted(makeSession())
+    }
+
+    private func expectFailedResumeStaysInterrupted(_ session: MeetingSession) async throws {
+        let meeting = try interruptedMeeting(lines: [line(0, 60), line(65, 120)])
+        try session.resume(meeting)
+        #expect(await waitUntil { session.phase == .idle })
+        #expect(!meetingCapture.isCapturing && !micCapture.isCapturing)
+        let saved = try #require(makeStore().meetings.first)
+        #expect(saved.status == .interrupted && saved.endedAt == nil && saved.failure == nil)
+        #expect(saved.gaps.isEmpty)
+        #expect(try journal(saved).count == 2)
+        #expect(store.lastError?.hasPrefix("Rekaman tidak bisa dilanjutkan: ") == true)
+        #expect(makeStore().recoverInterrupted().map(\.id) == [meeting.id])
     }
 
     @Test func stoppingWhileResumeStartsLeavesNothingCapturing() async throws {
@@ -146,6 +193,14 @@ final class RecoveryTests {
         #expect(saved?.status == .ready)
         #expect(saved?.endedAt == startedAt.addingTimeInterval(120))
         #expect(try journal(meeting).count == 2)
+    }
+
+    /// Recording ran on after a resume, even without new lines.
+    @Test func finishInterruptedEndsNoEarlierThanTheLastGap() async throws {
+        let gap = Gap(span: .init(start: 120, end: 200), reason: .crash)
+        let meeting = try interruptedMeeting(lines: [line(0, 60), line(65, 120)], gaps: [gap])
+        await makeSession().finishInterrupted(meeting)
+        #expect(makeStore().meetings.first?.endedAt == startedAt.addingTimeInterval(200))
     }
 
     // MARK: Quit

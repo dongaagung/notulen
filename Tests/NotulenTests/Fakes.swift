@@ -86,8 +86,14 @@ struct FakeSpeech: SttProvider {
     var startDelay = Duration.zero
     /// Counts every chunk read.
     var received: ReceivedAudio?
+    /// `prepare` throws, like a speech model that can't be installed.
+    var failsToPrepare = false
 
-    func prepare(progress: (@Sendable (Double) -> Void)?) async throws {}
+    struct PrepareFailure: Error {}
+
+    func prepare(progress: (@Sendable (Double) -> Void)?) async throws {
+        if failsToPrepare { throw PrepareFailure() }
+    }
 
     func transcribe(_ audio: AsyncStream<AudioChunk>) -> AsyncThrowingStream<TranscriptUpdate, any Error> {
         let (meeting, mic, startDelay, received) = (meeting, mic, startDelay, received)

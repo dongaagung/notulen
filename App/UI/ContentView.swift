@@ -11,7 +11,7 @@ struct ContentView: View {
 
     private struct Interrupted {
         var meeting: Meeting
-        /// Meeting time of the last journaled line.
+        /// Where its recording stopped, in meeting time.
         var stoppedAt: TimeInterval
     }
 
@@ -33,7 +33,7 @@ struct ContentView: View {
             guard session.phase == .idle else { return }
             interrupted = store.recoverInterrupted().map { meeting in
                 let lines = (try? store.transcriptLines(for: meeting.id)) ?? []
-                return Interrupted(meeting: meeting, stoppedAt: lines.recordedUntil)
+                return Interrupted(meeting: meeting, stoppedAt: meeting.recordedUntil(lines))
             }
         }
         .alert(interruptedTitle, isPresented: asksAboutInterrupted, presenting: interrupted.first) { item in

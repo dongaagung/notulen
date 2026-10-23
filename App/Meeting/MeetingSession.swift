@@ -111,22 +111,24 @@ final class MeetingSession {
         }
         take(meeting, journal: journal, transcript: Transcript())
         phase = .starting
-        startTask = Task { await start(configuration, resuming: false) }
+        startTask = Task { await start(configuration, resumedAfter: nil) }
     }
 
     /// Records on in a meeting a crash or quit cut off: its journaled lines
-    /// come back, and the time since the last one is a crash gap. Meeting
-    /// time runs from the original start, so the meeting counts as recording
-    /// at once; capture restarts in the background.
+    /// come back, and the time since the recording stopped is a crash gap.
+    /// Meeting time runs from the original start, so the meeting counts as
+    /// recording at once; capture restarts in the background. If it can't,
+    /// the meeting goes back to interrupted.
     func resume(_ meeting: Meeting) throws {
         guard phase == .idle else { throw StartError.alreadyRecording }
         guard let journalURL = store.transcriptURL(for: meeting.id) else { throw StartError.noStorage }
         let lines = try store.transcriptLines(for: meeting.id)
         let journal = try TranscriptJournal(url: journalURL)
         var meeting = meeting
-        let stoppedAt = lines.recordedUntil
+        let stoppedAt = meeting.recordedUntil(lines)
         let resumedAt = now().timeIntervalSince(meeting.startedAt)
-        meeting.gaps.append(Gap(span: TimeSpan(start: stoppedAt, end: max(stoppedAt, resumedAt)), reason: .crash))
+        let gap = Gap(span: TimeSpan(start: stoppedAt, end: max(stoppedAt, resumedAt)), reason: .crash)
+        meeting.gaps.append(gap)
         meeting.status = .recording
         meeting.endedAt = nil
         store.save(meeting)
@@ -135,7 +137,7 @@ final class MeetingSession {
         let configuration = Configuration(
             title: meeting.title, audioSource: meeting.audioSource,
             locale: Locale(identifier: meeting.language), vocabulary: store.settings.vocabulary)
-        startTask = Task { await start(configuration, resuming: true) }
+        startTask = Task { await start(configuration, resumedAfter: gap) }
     }
 
     /// Ends a meeting a crash or quit cut off, where its recording stopped.
@@ -144,7 +146,7 @@ final class MeetingSession {
         guard meeting.id != self.meeting?.id || phase == .idle else { return }
         var meeting = meeting
         let lines = (try? store.transcriptLines(for: meeting.id)) ?? []
-        meeting.endedAt = meeting.startedAt.addingTimeInterval(lines.recordedUntil)
+        meeting.endedAt = meeting.startedAt.addingTimeInterval(meeting.recordedUntil(lines))
         meeting.status = .ready
         store.save(meeting)
     }
@@ -175,8 +177,9 @@ final class MeetingSession {
         phase = .idle
     }
 
-    /// A resumed meeting keeps its start time; it is already recording.
-    private func start(_ configuration: Configuration, resuming: Bool) async {
+    /// `crashGap`: the gap a resume added. A resumed meeting keeps its start
+    /// time; it is already recording.
+    private func start(_ configuration: Configuration, resumedAfter crashGap: Gap?) async {
         let speech = makeSpeech(configuration.locale, configuration.vocabulary)
         do {
             // Downloads the on-device speech model on first use.
@@ -190,7 +193,7 @@ final class MeetingSession {
             guard !Task.isCancelled else { return }
             let message = "Pengenalan suara tidak bisa disiapkan: \(error.localizedDescription)"
             post(.error(message))
-            failStart(message)
+            failStart(message, resumedAfter: crashGap)
             return
         }
         guard !Task.isCancelled else { return }
@@ -201,7 +204,7 @@ final class MeetingSession {
         let micAllowed = await type(of: devices.mic).requestPermission()
         guard !Task.isCancelled else { return }
 
-        if !resuming {
+        if crashGap == nil {
             // Meeting time 0 is when capture starts, not when the start began.
             meeting?.startedAt = now()
             if let meeting { store.save(meeting) }
@@ -209,7 +212,7 @@ final class MeetingSession {
         startCapture(devices, micAllowed: micAllowed, speech: speech)
         startupStatus = nil
         guard !listeners.isEmpty else {
-            failStart(notices.map(\.message).joined(separator: "\n"))
+            failStart(notices.map(\.message).joined(separator: "\n"), resumedAfter: crashGap)
             return
         }
         phase = .recording
@@ -260,12 +263,21 @@ final class MeetingSession {
         return meeting
     }
 
-    /// Nothing could be recorded: the meeting is saved as failed, with why.
-    private func failStart(_ message: String) {
+    /// Nothing could be recorded. A new meeting is saved as failed, with why.
+    /// A resumed one goes back to interrupted without the resume's gap, to
+    /// resume or finish later, and the owner hears why in the error bar
+    /// (the live view is gone by then).
+    private func failStart(_ message: String, resumedAfter crashGap: Gap?) {
         discardCapture()
-        meeting?.status = .failed
-        meeting?.failure = message
-        meeting?.endedAt = now()
+        if let crashGap {
+            if let index = meeting?.gaps.lastIndex(of: crashGap) { meeting?.gaps.remove(at: index) }
+            meeting?.status = .interrupted
+            store.lastError = "Rekaman tidak bisa dilanjutkan: \(message)"
+        } else {
+            meeting?.status = .failed
+            meeting?.failure = message
+            meeting?.endedAt = now()
+        }
         if let meeting { store.save(meeting) }
         startupStatus = nil
         phase = .idle
