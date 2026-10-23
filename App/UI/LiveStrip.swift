@@ -52,7 +52,8 @@ struct LiveStrip: View {
         var pending: String?
 
         /// Whoever is speaking now, the meeting before the mic; when nobody
-        /// is, whoever spoke last. Nil before anyone spoke.
+        /// is, whoever spoke last. Named the way the transcript names them.
+        /// Nil before anyone spoke.
         static func latest(in transcript: Transcript) -> Caption? {
             let channel: Channel
             if transcript.volatileText[.meeting] != nil {
@@ -64,12 +65,11 @@ struct LiveStrip: View {
             } else {
                 return nil
             }
-            let last = transcript.lines.last
-            let isMe = channel == .mic
+            let final = transcript.lines.last.flatMap { $0.channel == channel ? $0 : nil }
+            let speaker = final?.speaker ?? (channel == .mic ? .me : .others)
             return Caption(
-                speaker: isMe ? "Saya" : "Lainnya", isMe: isMe,
-                final: last?.channel == channel ? last?.text : nil,
-                pending: transcript.volatileText[channel])
+                speaker: TranscriptView.label(speaker), isMe: speaker == .me,
+                final: final?.text, pending: transcript.volatileText[channel])
         }
 
         var text: Text {

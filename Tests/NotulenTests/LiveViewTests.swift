@@ -51,6 +51,17 @@ struct LiveViewTests {
             == "Semua audio sistem · Bahasa Inggris")
     }
 
+    // MARK: Column
+
+    /// 40 pt margins while the column still gets 480 pt; 16 pt below that,
+    /// as in an 820 pt window with the sidebar and the transcript open.
+    @Test func columnKeepsWideMarginsUntilItGetsNarrow() {
+        #expect(LiveMeetingView.sidePadding(forWidth: 840) == 40)
+        #expect(LiveMeetingView.sidePadding(forWidth: 560) == 40)
+        #expect(LiveMeetingView.sidePadding(forWidth: 559) == 16)
+        #expect(LiveMeetingView.sidePadding(forWidth: 820 - 240 - 260) == 16)
+    }
+
     // MARK: Live strip
 
     @Test func stripShowsNothingBeforeAnyoneSpoke() {
@@ -83,6 +94,18 @@ struct LiveViewTests {
         transcript.apply(volatile("Jadi"), channel: .meeting, offset: 0, now: 6)
         #expect(LiveStrip.Caption.latest(in: transcript)?.pending == "Jadi")
         #expect(LiveStrip.Caption.latest(in: transcript)?.final == "Yang penting jangan bentrok.")
+    }
+
+    /// The strip names a speaker the way the transcript does.
+    @Test func stripNamesSpeakersLikeTheTranscript() {
+        let line = TranscriptLine(channel: .meeting, speaker: .remote(2), text: "Setuju", start: 1, end: 2)
+        var transcript = Transcript(lines: [line])
+        #expect(LiveStrip.Caption.latest(in: transcript)
+            == LiveStrip.Caption(speaker: "Pembicara 2", isMe: false, final: "Setuju", pending: nil))
+        #expect(LiveStrip.Caption.latest(in: transcript)?.speaker == TranscriptView.label(.remote(2)))
+        // Words still changing have no speaker of their own yet: the line's speaker stands.
+        transcript.apply(volatile("Kalau begitu"), channel: .meeting, offset: 0, now: 3)
+        #expect(LiveStrip.Caption.latest(in: transcript)?.speaker == "Pembicara 2")
     }
 
     private func volatile(_ text: String) -> TranscriptUpdate {

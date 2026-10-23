@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// Transcript lines with who spoke ("Saya" or "Lainnya") and when, plus each
-/// channel's in-progress words, faded, at the end. Follows new lines unless
-/// the owner scrolled up; scrolling back to the end follows again.
+/// channel's in-progress words, faded, at the end. Opens at the latest line
+/// and follows new ones unless the owner scrolled up; scrolling back to the
+/// end follows again.
 struct TranscriptView: View {
     let transcript: Transcript
     @Environment(\.textScale) private var scale
@@ -52,6 +53,10 @@ struct TranscriptView: View {
                     followsEnd = false
                 }
             }
+            // Only where it starts: a fixed bottom anchor while the content
+            // grows would move the lines the owner scrolled up to.
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onAppear { proxy.scrollTo(Self.end, anchor: .bottom) }
             .onChange(of: transcript) {
                 if followsEnd { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
@@ -60,7 +65,8 @@ struct TranscriptView: View {
 
     private static let end = "end"
 
-    private static func label(_ speaker: SpeakerID) -> String {
+    /// "Saya", "Pembicara 2", or "Lainnya" before speakers are told apart.
+    nonisolated static func label(_ speaker: SpeakerID) -> String {
         if speaker == .me { return "Saya" }
         if let number = speaker.remoteNumber { return "Pembicara \(number)" }
         return "Lainnya"

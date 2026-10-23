@@ -10,8 +10,9 @@ struct LiveNotesView: View {
     /// Why no notes are coming, such as a missing API key.
     let problem: String?
     @Environment(\.textScale) private var scale
-    /// The other topics the owner opened, by index.
-    @ViewState private var expanded: Set<Int> = []
+    /// The other topics the owner opened, by title: the model may merge or
+    /// reorder topics between updates, which moves their indices.
+    @ViewState private var expanded: Set<String> = []
 
     static let placeholder = "Catatan pertama muncul sekitar 2–3 menit setelah percakapan dimulai."
 
@@ -122,7 +123,8 @@ struct LiveNotesView: View {
                     if index != indices.first {
                         Divider().padding(.leading, 14)
                     }
-                    topicRow(notes.topics[index], number: index + 1, isExpanded: isExpanded(index))
+                    let topic = notes.topics[index]
+                    topicRow(topic, number: index + 1, isExpanded: isExpanded(topic.title))
                 }
             }
             .background(Color.card, in: .rect(cornerRadius: 12))
@@ -164,11 +166,11 @@ struct LiveNotesView: View {
         .padding(.horizontal, 14)
     }
 
-    private func isExpanded(_ index: Int) -> Binding<Bool> {
+    private func isExpanded(_ title: String) -> Binding<Bool> {
         Binding {
-            expanded.contains(index)
+            expanded.contains(title)
         } set: { open in
-            if open { expanded.insert(index) } else { expanded.remove(index) }
+            if open { expanded.insert(title) } else { expanded.remove(title) }
         }
     }
 

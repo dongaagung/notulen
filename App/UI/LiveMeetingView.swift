@@ -13,11 +13,22 @@ struct LiveMeetingView: View {
     @Environment(\.textScale) private var scale
     /// The transcript inspector; the menu's Tampilkan Transkrip (⌥⌘T) too.
     @ViewState private var showsTranscript = false
+    /// The notes area's width, for `sidePadding(forWidth:)`.
+    @ViewState private var notesWidth = CGFloat.infinity
 
     static let finishOffer = "Meeting sepertinya sudah selesai. Selesaikan rekaman?"
 
     /// The notes read at most this wide.
     static let columnWidth: CGFloat = 620
+    /// Below this the column gives up its wide margins.
+    static let narrowColumn: CGFloat = 480
+
+    /// Room on each side of the column: 40 pt, or 16 pt where 40 would leave
+    /// the column narrower than `narrowColumn`, as with the sidebar and the
+    /// transcript both open in a small window.
+    static func sidePadding(forWidth width: CGFloat) -> CGFloat {
+        width - 2 * 40 < narrowColumn ? 16 : 40
+    }
 
     /// ⇧⌘M is the app menu's Matikan Mic / Nyalakan Mic.
     static func micToggleHelp(micOn: Bool) -> String {
@@ -55,7 +66,7 @@ struct LiveMeetingView: View {
             .inspector(isPresented: $showsTranscript) {
                 InspectorTranscript()
                     .textScalePinch(textScale)
-                    .inspectorColumnWidth(min: 240, ideal: 300, max: 480)
+                    .inspectorColumnWidth(min: 220, ideal: 260, max: 360)
             }
             .alert(Self.wakeQuestion(sleptFor: session.wakeQuestion ?? 0, title: title), isPresented: asksAfterWake) {
                 // No cancel: nothing records until the owner picks one.
@@ -83,11 +94,12 @@ struct LiveMeetingView: View {
                     problem: notesProblem)
             }
             .frame(maxWidth: Self.columnWidth, alignment: .leading)
-            .padding(.horizontal, 40)
+            .padding(.horizontal, sidePadding)
             .padding(.top, 30)
             .padding(.bottom, 40)
             .frame(maxWidth: .infinity)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { notesWidth = $0 }
         .safeAreaInset(edge: .top, spacing: 0) { banners }
         .safeAreaInset(edge: .bottom, spacing: 0) { LiveStrip() }
         .textScalePinch(textScale)
@@ -113,8 +125,12 @@ struct LiveMeetingView: View {
             NoticeBanner(notices: session.notices)
         }
         .frame(maxWidth: Self.columnWidth)
-        .padding(.horizontal, 40)
+        .padding(.horizontal, sidePadding)
         .frame(maxWidth: .infinity)
+    }
+
+    private var sidePadding: CGFloat {
+        Self.sidePadding(forWidth: notesWidth)
     }
 
     @ToolbarContentBuilder
