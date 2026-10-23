@@ -90,6 +90,8 @@ final class MicTests {
         #expect(micCapture.pauseCount == 1 && micCapture.resumeCount == 0)
         // Saved at once, so a crash keeps when the mic went off.
         #expect(savedMicOff() == [.init(start: 60, end: 60)])
+        // The live transcript shows a period once it ended.
+        #expect(session.endedMicOffPeriods.isEmpty)
         session.setMicEnabled(false)
         #expect(micCapture.pauseCount == 1)
 
@@ -98,6 +100,7 @@ final class MicTests {
         #expect(session.isMicOn)
         #expect(micCapture.pauseCount == 1 && micCapture.resumeCount == 1)
         #expect(savedMicOff() == [.init(start: 60, end: 90)])
+        #expect(session.endedMicOffPeriods == [.init(start: 60, end: 90)])
         // The meeting audio records on throughout.
         #expect(meetingCapture.pauseCount == 0 && meetingCapture.isCapturing)
         clock.advance(30)

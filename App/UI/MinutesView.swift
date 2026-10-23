@@ -101,7 +101,9 @@ struct MinutesView: View {
                 .disabled(tab != .minutes)
                 .accessibilityHidden(tab != .minutes)
             if tab == .transcript {
-                TranscriptView(transcript: Transcript(lines: lines), finished: .init(meeting: meeting, focus: focus))
+                TranscriptView(
+                    transcript: Transcript(lines: lines), finished: .init(meeting: meeting, focus: focus),
+                    gaps: meeting.gaps, micOff: meeting.micOff)
                     .textScalePinch(textScale)
                     .background { Color.canvas.ignoresSafeArea() }
             }
@@ -183,6 +185,15 @@ struct MinutesView: View {
                     .font(.scaled(.callout, scale))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                // Where the recording broke off, and the owner's mic was off.
+                if let pauses = TranscriptRows.summary(gaps: meeting.gaps, micOff: meeting.micOff) {
+                    Text(pauses)
+                        .font(.scaled(.subheadline, scale))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .padding(.top, 3 * scale)
+                }
                 titleField
                     .padding(.top, 6 * scale)
                     .padding(.bottom, 12 * scale)

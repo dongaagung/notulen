@@ -233,7 +233,9 @@ private struct InspectorTranscript: View {
                 .font(.headline)
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
-            TranscriptView(transcript: session.transcript)
+            TranscriptView(
+                transcript: session.transcript, gaps: session.meeting?.gaps ?? [],
+                micOff: session.endedMicOffPeriods)
         }
     }
 }

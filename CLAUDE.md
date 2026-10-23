@@ -36,7 +36,8 @@ Update this section when it changes.
   MeetingFinisher (diarize → minutes), TranscriptJournal (append + fsync per
   final line), PowerGuard + WakePolicy (no idle sleep while recording; wake
   rules), MeetingEndDetector, MicOffTracker, Speakers, MeetingTime,
-  MeetingNotice, Transcript. Crash recovery.
+  MeetingNotice, Transcript, TranscriptRows (lines plus gap and mic-off
+  dividers, in time order). Crash recovery.
 - App/Export: MinutesMarkdown, MinutesHTML + PDFExporter, NotionClient,
   NotionBlocks, NotionPageID, MinutesFormatting
 - App/UI: sidebar, live view, processing, minutes, rename/merge speakers,

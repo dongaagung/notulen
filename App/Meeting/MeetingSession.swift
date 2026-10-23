@@ -867,6 +867,10 @@ extension MeetingSession {
     /// False while the owner has the mic off.
     var isMicOn: Bool { !micOff.isOff }
 
+    /// When the owner had the mic off, without a period still going on (the
+    /// mic button and the strip show that one).
+    var endedMicOffPeriods: [TimeSpan] { micOff.spans }
+
     /// Turns the owner's mic off or on while recording; does nothing
     /// otherwise. The meeting audio records on either way. Every change is
     /// saved at once, so a crash keeps when the mic went off. A mic that

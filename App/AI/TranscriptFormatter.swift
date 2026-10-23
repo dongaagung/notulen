@@ -24,11 +24,14 @@ enum TranscriptFormatter {
         return (header + [""] + body).joined(separator: "\n")
     }
 
-    private static func span(_ span: TimeSpan) -> String {
+    /// "42:10–58:30".
+    static func span(_ span: TimeSpan) -> String {
         "\(MeetingTime.format(span.start))–\(MeetingTime.format(span.end))"
     }
 
-    private static func reason(_ reason: Gap.Reason) -> String {
+    /// Why the recording broke off: "Mac tidur", "app berhenti", "perangkat
+    /// audio hilang".
+    static func reason(_ reason: Gap.Reason) -> String {
         switch reason {
         case .sleep: "Mac tidur"
         case .crash: "app berhenti"

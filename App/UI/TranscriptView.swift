@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Transcript lines with who spoke ("Saya" or "Lainnya") and when, plus each
-/// channel's in-progress words, faded, at the end. Opens at the latest line
-/// and follows new ones unless the owner scrolled up; scrolling back to the
-/// end follows again.
+/// channel's in-progress words, faded, at the end. A divider marks where the
+/// recording broke off and where the owner's mic was off. Opens at the
+/// latest line and follows new ones unless the owner scrolled up; scrolling
+/// back to the end follows again.
 ///
 /// A finished meeting's transcript names speakers as the meeting does now,
 /// opens at the top, and scrolls to the line in `focus` and highlights it.
@@ -11,6 +12,10 @@ struct TranscriptView: View {
     let transcript: Transcript
     /// Set for a meeting that has ended.
     var finished: Finished?
+    /// Where the recording broke off.
+    var gaps: [Gap] = []
+    /// When the owner's mic was off.
+    var micOff: [TimeSpan] = []
     @Environment(\.textScale) private var scale
     @ViewState private var followsEnd = true
 
@@ -36,20 +41,15 @@ struct TranscriptView: View {
                             .font(.scaled(.body, scale))
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(transcript.lines) { line in
-                        let speaker = speaker(of: line)
-                        row(speaker.name, isMe: speaker.isMe, time: line.start) {
-                            Text(line.text)
+                    ForEach(TranscriptRows.build(lines: transcript.lines, gaps: gaps, micOff: micOff)) { item in
+                        switch item {
+                        case .line(let line):
+                            lineRow(line)
+                        case .gap:
+                            divider(item.dividerText ?? "", systemImage: "pause.circle")
+                        case .micOff:
+                            divider(item.dividerText ?? "", systemImage: "mic.slash")
                         }
-                        .background {
-                            if line.id == finished?.focus {
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(.tint.opacity(0.12))
-                                    .padding(.horizontal, -8)
-                                    .padding(.vertical, -5)
-                            }
-                        }
-                        .id(line.id)
                     }
                     ForEach([Channel.meeting, .mic], id: \.self) { channel in
                         if let text = transcript.volatileText[channel] {
@@ -94,6 +94,34 @@ struct TranscriptView: View {
     }
 
     private static let end = "end"
+
+    private func lineRow(_ line: TranscriptLine) -> some View {
+        let speaker = speaker(of: line)
+        return row(speaker.name, isMe: speaker.isMe, time: line.start) {
+            Text(line.text)
+        }
+        .background {
+            if line.id == finished?.focus {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.tint.opacity(0.12))
+                    .padding(.horizontal, -8)
+                    .padding(.vertical, -5)
+            }
+        }
+        .id(line.id)
+    }
+
+    /// "Rekaman terputus 42:10–58:30 (Mac tidur)" between hairlines.
+    private func divider(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.scaled(.caption, scale, weight: .medium))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 7 * scale)
+            .overlay(alignment: .top) { Divider() }
+            .overlay(alignment: .bottom) { Divider() }
+    }
 
     /// The meeting's name for who said it, else "Saya" or "Lainnya".
     private func speaker(of line: TranscriptLine) -> (name: String, isMe: Bool) {
