@@ -57,7 +57,15 @@ struct JSONFileStore: Sendable {
         return encoder
     }()
 
-    private static let decoder: JSONDecoder = {
+    /// Compact single-line encoder (same dates and key order) for JSONL files.
+    static let lineEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
